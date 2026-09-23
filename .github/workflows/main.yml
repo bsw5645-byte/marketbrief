@@ -1,6 +1,12 @@
 name: BONG Morning Brief
 
 on:
+  schedule:
+    # 한국시간 월~금 오전 8시
+    # GitHub Actions는 UTC 기준이라 일~목 23:00으로 설정
+    - cron: '0 23 * * 0-4'
+
+  # 수동 테스트용
   workflow_dispatch:
 
 jobs:
@@ -14,24 +20,32 @@ jobs:
           python-version: '3.12'
 
       - name: Install packages
-        run: pip install yfinance requests feedparser
+        run: pip install yfinance requests feedparser deep-translator
 
       - name: Create and send morning brief
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
         run: |
           cat << 'PY' > /tmp/brief.py
+
           import os
-          import yfinance as yf
+          import time
           import requests
           import feedparser
+          import yfinance as yf
+
           from datetime import datetime
           from zoneinfo import ZoneInfo
+          from urllib.parse import quote
+          from deep_translator import GoogleTranslator
 
-          # =========================
-          # 시장 데이터
-          # =========================
+
+          # =====================================
+          # 1. 시장 데이터
+          # =====================================
+
           assets = {
               "NASDAQ": "^IXIC",
               "S&P500": "^GSPC",
@@ -42,6 +56,7 @@ jobs:
               "JPY/KRW": "JPYKRW=X",
           }
 
+
           def get_change(ticker):
               df = yf.Ticker(ticker).history(period="5d")
               closes = df["Close"].dropna()
@@ -51,9 +66,11 @@ jobs:
 
               previous = float(closes.iloc[-2])
               current = float(closes.iloc[-1])
+
               change = (current / previous - 1) * 100
 
               return current, change
+
 
           data = {}
 
@@ -63,7 +80,9 @@ jobs:
               except Exception:
                   data[name] = (None, None)
 
-          def line(name):
+
+          def market_line(name):
+
               value, change = data[name]
 
               if value is None:
@@ -72,71 +91,146 @@ jobs:
               arrow = "▲" if change >= 0 else "▼"
 
               if name in ["USD/KRW", "JPY/KRW"]:
-                  return f"{name}: {value:,.2f}원 {arrow}{abs(change):.2f}%"
+                  return (
+                      f"{name}: {value:,.2f}원 "
+                      f"{arrow}{abs(change):.2f}%"
+                  )
 
-              return f"{name}: {change:+.2f}%"
+              return (
+                  f"{name}: {change:+.2f}%"
+              )
 
-          # =========================
-          # 최신 뉴스
-          # =========================
-          rss_urls = [
-              "https://news.google.com/rss/search?q=AI+NVIDIA+semiconductor+stock+market&hl=en-US&gl=US&ceid=US:en",
-              "https://news.google.com/rss/search?q=Micron+semiconductor+NASDAQ&hl=en-US&gl=US&ceid=US:en",
+
+          # =====================================
+          # 2. 뉴스 검색
+          # =====================================
+
+          queries = [
+              "NVIDIA AI semiconductor",
+              "Micron memory semiconductor",
+              "US stock market Nasdaq",
+              "AI technology big tech",
+              "South Korea stock market semiconductor"
           ]
 
-          news = []
+          all_news = []
           seen = set()
 
-          for url in rss_urls:
+          for query in queries:
+
+              url = (
+                  "https://news.google.com/rss/search?"
+                  f"q={quote(query)}"
+                  "&hl=en-US"
+                  "&gl=US"
+                  "&ceid=US:en"
+              )
+
               try:
                   feed = feedparser.parse(url)
 
-                  for entry in feed.entries:
+                  for entry in feed.entries[:10]:
+
                       title = entry.title.strip()
 
-                      if title not in seen:
-                          seen.add(title)
-                          news.append(title)
+                      if title in seen:
+                          continue
 
-                      if len(news) >= 5:
-                          break
+                      seen.add(title)
+
+                      timestamp = 0
+
+                      if hasattr(entry, "published_parsed"):
+                          try:
+                              timestamp = time.mktime(
+                                  entry.published_parsed
+                              )
+                          except Exception:
+                              pass
+
+                      all_news.append(
+                          {
+                              "title": title,
+                              "time": timestamp
+                          }
+                      )
 
               except Exception:
                   pass
 
-              if len(news) >= 5:
-                  break
 
-          if news:
-              news_text = "\n".join(
+          # 최신 뉴스부터 정렬
+          all_news.sort(
+              key=lambda x: x["time"],
+              reverse=True
+          )
+
+          selected_news = all_news[:5]
+
+
+          # =====================================
+          # 3. 무료 한국어 번역
+          # =====================================
+
+          translator = GoogleTranslator(
+              source="auto",
+              target="ko"
+          )
+
+          translated_news = []
+
+          for item in selected_news:
+
+              title = item["title"]
+
+              try:
+                  korean = translator.translate(title)
+
+                  if korean:
+                      translated_news.append(korean)
+                  else:
+                      translated_news.append(title)
+
+              except Exception:
+                  # 번역 서비스 문제 발생 시 영어 제목 그대로 표시
+                  translated_news.append(title)
+
+
+          if translated_news:
+
+              news_text = "\n\n".join(
                   f"{i+1}. {title}"
-                  for i, title in enumerate(news[:5])
+                  for i, title in enumerate(translated_news)
               )
+
           else:
               news_text = "뉴스를 가져오지 못했습니다."
 
-          # =========================
-          # 메시지 작성
-          # =========================
+
+          # =====================================
+          # 4. 텔레그램 메시지
+          # =====================================
+
           today = datetime.now(
               ZoneInfo("Asia/Seoul")
-          ).strftime("%Y년 %m월 %d일")
+          ).strftime("%Y년 %m월 %d일 %A")
+
 
           message = f"""☀️ BONG Morning Brief
           {today}
 
           📊 밤사이 시장
-          {line("NASDAQ")}
-          {line("S&P500")}
-          {line("필라델피아 반도체")}
+          {market_line("NASDAQ")}
+          {market_line("S&P500")}
+          {market_line("필라델피아 반도체")}
 
           💵 환율
-          {line("USD/KRW")}
-          {line("JPY/KRW")}
+          {market_line("USD/KRW")}
+          {market_line("JPY/KRW")}
 
-          💼 미국 반도체·빅테크
-          {line("NVIDIA")}
-          {line("Micron")}
+          💼 미국 반도체
+          NVIDIA: {market_line("NVIDIA").split(": ",1)[1]}
+          Micron: {market_line("Micron").split(": ",1)[1]}
 
           📰 관심 뉴스 TOP 5
           {news_text}
@@ -145,14 +239,18 @@ jobs:
           BONG Morning Brief
           """
 
-          # 앞쪽 불필요한 공백 제거
+
+          # 코드 들여쓰기로 생기는 앞 공백 제거
           message = "\n".join(
-              line.strip() for line in message.splitlines()
+              line.strip()
+              for line in message.splitlines()
           )
 
-          # =========================
-          # 텔레그램 전송
-          # =========================
+
+          # =====================================
+          # 5. Telegram 전송
+          # =====================================
+
           response = requests.post(
               f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
               data={
