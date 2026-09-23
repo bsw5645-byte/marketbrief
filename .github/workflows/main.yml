@@ -14,19 +14,24 @@ jobs:
           python-version: '3.12'
 
       - name: Install packages
-        run: pip install yfinance requests
+        run: pip install yfinance requests feedparser
 
-      - name: Create and send market brief
+      - name: Create and send morning brief
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           cat << 'PY' > /tmp/brief.py
+          import os
           import yfinance as yf
           import requests
+          import feedparser
           from datetime import datetime
           from zoneinfo import ZoneInfo
 
+          # =========================
+          # 시장 데이터
+          # =========================
           assets = {
               "NASDAQ": "^IXIC",
               "S&P500": "^GSPC",
@@ -58,7 +63,7 @@ jobs:
               except Exception:
                   data[name] = (None, None)
 
-          def line(name, decimals=2):
+          def line(name):
               value, change = data[name]
 
               if value is None:
@@ -71,7 +76,51 @@ jobs:
 
               return f"{name}: {change:+.2f}%"
 
-          today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
+          # =========================
+          # 최신 뉴스
+          # =========================
+          rss_urls = [
+              "https://news.google.com/rss/search?q=AI+NVIDIA+semiconductor+stock+market&hl=en-US&gl=US&ceid=US:en",
+              "https://news.google.com/rss/search?q=Micron+semiconductor+NASDAQ&hl=en-US&gl=US&ceid=US:en",
+          ]
+
+          news = []
+          seen = set()
+
+          for url in rss_urls:
+              try:
+                  feed = feedparser.parse(url)
+
+                  for entry in feed.entries:
+                      title = entry.title.strip()
+
+                      if title not in seen:
+                          seen.add(title)
+                          news.append(title)
+
+                      if len(news) >= 5:
+                          break
+
+              except Exception:
+                  pass
+
+              if len(news) >= 5:
+                  break
+
+          if news:
+              news_text = "\n".join(
+                  f"{i+1}. {title}"
+                  for i, title in enumerate(news[:5])
+              )
+          else:
+              news_text = "뉴스를 가져오지 못했습니다."
+
+          # =========================
+          # 메시지 작성
+          # =========================
+          today = datetime.now(
+              ZoneInfo("Asia/Seoul")
+          ).strftime("%Y년 %m월 %d일")
 
           message = f"""☀️ BONG Morning Brief
           {today}
@@ -89,20 +138,32 @@ jobs:
           {line("NVIDIA")}
           {line("Micron")}
 
+          📰 관심 뉴스 TOP 5
+          {news_text}
+
           ─────────────
-          1차 자동 브리핑 테스트
+          BONG Morning Brief
           """
 
+          # 앞쪽 불필요한 공백 제거
+          message = "\n".join(
+              line.strip() for line in message.splitlines()
+          )
+
+          # =========================
+          # 텔레그램 전송
+          # =========================
           response = requests.post(
-              f"https://api.telegram.org/bot{__import__('os').environ['BOT_TOKEN']}/sendMessage",
+              f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
               data={
-                  "chat_id": __import__('os').environ["CHAT_ID"],
+                  "chat_id": os.environ["CHAT_ID"],
                   "text": message
               },
               timeout=30
           )
 
           response.raise_for_status()
+
           PY
 
           python /tmp/brief.py
