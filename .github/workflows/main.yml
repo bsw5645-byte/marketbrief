@@ -1,20 +1,108 @@
-name: Telegram Test
+name: BONG Morning Brief
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-telegram:
+  morning-brief:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Send Telegram test message
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install packages
+        run: pip install yfinance requests
+
+      - name: Create and send market brief
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${CHAT_ID}" \
-            --data-urlencode "text=✅ BONG Morning Brief
+          cat << 'PY' > /tmp/brief.py
+          import yfinance as yf
+          import requests
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
 
-          텔레그램 자동 전송 테스트 성공! 🎉"
+          assets = {
+              "NASDAQ": "^IXIC",
+              "S&P500": "^GSPC",
+              "필라델피아 반도체": "^SOX",
+              "NVIDIA": "NVDA",
+              "Micron": "MU",
+              "USD/KRW": "KRW=X",
+              "JPY/KRW": "JPYKRW=X",
+          }
+
+          def get_change(ticker):
+              df = yf.Ticker(ticker).history(period="5d")
+              closes = df["Close"].dropna()
+
+              if len(closes) < 2:
+                  return None, None
+
+              previous = float(closes.iloc[-2])
+              current = float(closes.iloc[-1])
+              change = (current / previous - 1) * 100
+
+              return current, change
+
+          data = {}
+
+          for name, ticker in assets.items():
+              try:
+                  data[name] = get_change(ticker)
+              except Exception:
+                  data[name] = (None, None)
+
+          def line(name, decimals=2):
+              value, change = data[name]
+
+              if value is None:
+                  return f"{name}: 데이터 확인 실패"
+
+              arrow = "▲" if change >= 0 else "▼"
+
+              if name in ["USD/KRW", "JPY/KRW"]:
+                  return f"{name}: {value:,.2f}원 {arrow}{abs(change):.2f}%"
+
+              return f"{name}: {change:+.2f}%"
+
+          today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
+
+          message = f"""☀️ BONG Morning Brief
+          {today}
+
+          📊 밤사이 시장
+          {line("NASDAQ")}
+          {line("S&P500")}
+          {line("필라델피아 반도체")}
+
+          💵 환율
+          {line("USD/KRW")}
+          {line("JPY/KRW")}
+
+          💼 미국 반도체·빅테크
+          {line("NVIDIA")}
+          {line("Micron")}
+
+          ─────────────
+          1차 자동 브리핑 테스트
+          """
+
+          response = requests.post(
+              f"https://api.telegram.org/bot{__import__('os').environ['BOT_TOKEN']}/sendMessage",
+              data={
+                  "chat_id": __import__('os').environ["CHAT_ID"],
+                  "text": message
+              },
+              timeout=30
+          )
+
+          response.raise_for_status()
+          PY
+
+          python /tmp/brief.py
