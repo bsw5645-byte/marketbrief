@@ -3,10 +3,8 @@ name: BONG Morning Brief
 on:
   schedule:
     # 한국시간 월~금 오전 8시
-    # GitHub Actions는 UTC 기준이라 일~목 23:00으로 설정
     - cron: '0 23 * * 0-4'
 
-  # 수동 테스트용
   workflow_dispatch:
 
 jobs:
@@ -20,7 +18,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install packages
-        run: pip install yfinance requests feedparser deep-translator
+        run: pip install yfinance requests feedparser
 
       - name: Create and send morning brief
         env:
@@ -39,11 +37,10 @@ jobs:
           from datetime import datetime
           from zoneinfo import ZoneInfo
           from urllib.parse import quote
-          from deep_translator import GoogleTranslator
 
 
           # =====================================
-          # 1. 시장 데이터
+          # 시장 데이터
           # =====================================
 
           assets = {
@@ -66,7 +63,6 @@ jobs:
 
               previous = float(closes.iloc[-2])
               current = float(closes.iloc[-1])
-
               change = (current / previous - 1) * 100
 
               return current, change
@@ -96,21 +92,19 @@ jobs:
                       f"{arrow}{abs(change):.2f}%"
                   )
 
-              return (
-                  f"{name}: {change:+.2f}%"
-              )
+              return f"{name}: {change:+.2f}%"
 
 
           # =====================================
-          # 2. 뉴스 검색
+          # 한국어 뉴스
           # =====================================
 
           queries = [
-              "NVIDIA AI semiconductor",
-              "Micron memory semiconductor",
-              "US stock market Nasdaq",
-              "AI technology big tech",
-              "South Korea stock market semiconductor"
+              "엔비디아 AI 반도체 when:1d",
+              "마이크론 메모리 반도체 when:1d",
+              "미국 증시 나스닥 반도체 when:1d",
+              "AI 빅테크 미국 증시 when:1d",
+              "한국 증시 반도체 when:1d",
           ]
 
           all_news = []
@@ -121,9 +115,9 @@ jobs:
               url = (
                   "https://news.google.com/rss/search?"
                   f"q={quote(query)}"
-                  "&hl=en-US"
-                  "&gl=US"
-                  "&ceid=US:en"
+                  "&hl=ko"
+                  "&gl=KR"
+                  "&ceid=KR:ko"
               )
 
               try:
@@ -132,6 +126,13 @@ jobs:
                   for entry in feed.entries[:10]:
 
                       title = entry.title.strip()
+
+                      # 한국어 제목만 사용
+                      if not any(
+                          '\uac00' <= c <= '\ud7a3'
+                          for c in title
+                      ):
+                          continue
 
                       if title in seen:
                           continue
@@ -148,18 +149,15 @@ jobs:
                           except Exception:
                               pass
 
-                      all_news.append(
-                          {
-                              "title": title,
-                              "time": timestamp
-                          }
-                      )
+                      all_news.append({
+                          "title": title,
+                          "time": timestamp
+                      })
 
               except Exception:
                   pass
 
 
-          # 최신 뉴스부터 정렬
           all_news.sort(
               key=lambda x: x["time"],
               reverse=True
@@ -168,53 +166,46 @@ jobs:
           selected_news = all_news[:5]
 
 
-          # =====================================
-          # 3. 무료 한국어 번역
-          # =====================================
-
-          translator = GoogleTranslator(
-              source="auto",
-              target="ko"
-          )
-
-          translated_news = []
-
-          for item in selected_news:
-
-              title = item["title"]
-
-              try:
-                  korean = translator.translate(title)
-
-                  if korean:
-                      translated_news.append(korean)
-                  else:
-                      translated_news.append(title)
-
-              except Exception:
-                  # 번역 서비스 문제 발생 시 영어 제목 그대로 표시
-                  translated_news.append(title)
-
-
-          if translated_news:
+          if selected_news:
 
               news_text = "\n\n".join(
-                  f"{i+1}. {title}"
-                  for i, title in enumerate(translated_news)
+                  f"{i+1}. {item['title']}"
+                  for i, item in enumerate(selected_news)
               )
 
           else:
-              news_text = "뉴스를 가져오지 못했습니다."
+              news_text = "관련 뉴스를 가져오지 못했습니다."
 
 
           # =====================================
-          # 4. 텔레그램 메시지
+          # 날짜
           # =====================================
 
-          today = datetime.now(
+          now = datetime.now(
               ZoneInfo("Asia/Seoul")
-          ).strftime("%Y년 %m월 %d일 %A")
+          )
 
+          weekdays = [
+              "월요일",
+              "화요일",
+              "수요일",
+              "목요일",
+              "금요일",
+              "토요일",
+              "일요일"
+          ]
+
+          today = (
+              f"{now.year}년 "
+              f"{now.month:02d}월 "
+              f"{now.day:02d}일 "
+              f"{weekdays[now.weekday()]}"
+          )
+
+
+          # =====================================
+          # 메시지
+          # =====================================
 
           message = f"""☀️ BONG Morning Brief
           {today}
@@ -240,7 +231,6 @@ jobs:
           """
 
 
-          # 코드 들여쓰기로 생기는 앞 공백 제거
           message = "\n".join(
               line.strip()
               for line in message.splitlines()
@@ -248,7 +238,7 @@ jobs:
 
 
           # =====================================
-          # 5. Telegram 전송
+          # Telegram 전송
           # =====================================
 
           response = requests.post(
