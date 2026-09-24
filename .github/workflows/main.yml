@@ -103,12 +103,18 @@ jobs:
                           continue
                       korean = sum('\uac00' <= char <= '\ud7a3' for char in title)
                       score = korean * 3 + (2 if entry.get("published") else 0)
-                      candidates.append((score, title, entry.get("source", {}).get("title", "")))
+                      candidates.append((
+                          score,
+                          title,
+                          entry.get("source", {}).get("title", ""),
+                          entry.get("link", ""),
+                      ))
               if not candidates:
                   return None
-              _, title, source = max(candidates, key=lambda item: item[0])
+              _, title, source, link = max(candidates, key=lambda item: item[0])
               used_titles.add(title)
-              return f"{title}" + (f" — {source}" if source else "")
+              headline = f"{title}" + (f" — {source}" if source else "")
+              return headline + (f"\n  ↳ {link}" if link else "")
 
           news_lines = []
           for category, queries in categories:
