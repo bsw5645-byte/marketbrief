@@ -1,351 +1,18 @@
-name: BONG Morning Brief
-
-on:
-  schedule:
-    # 한국시간 월~금 오전 8시
-    - cron: '0 23 * * 0-4'
-
-  workflow_dispatch:
-
-jobs:
-  morning-brief:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install packages
-        run: pip install yfinance requests feedparser icalendar
-
-      - name: Create and send morning brief
-        env:
-          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-        run: |
-          cat << 'PY' > /tmp/brief.py
-
-          import os
-          import calendar
-          import requests
-          import feedparser
-          import yfinance as yf
-
-          from datetime import datetime, date, time, timedelta
-          from zoneinfo import ZoneInfo
-          from urllib.parse import quote
-          from icalendar import Calendar
-
-
-          KST = ZoneInfo("Asia/Seoul")
-          ET = ZoneInfo("America/New_York")
-
-          now = datetime.now(KST)
-          today = now.date()
-
-          HEADERS = {
-              "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-          }
-
-
           # =====================================
-          # 1. 시장 데이터
+          # S&P Global 미국 PMI 일정 추가
           # =====================================
 
-          assets = {
-              "NASDAQ": "^IXIC",
-              "S&P500": "^GSPC",
-              "필라델피아 반도체": "^SOX",
-              "NVIDIA": "NVDA",
-              "Micron": "MU",
-              "USD/KRW": "KRW=X",
-              "JPY/KRW": "JPYKRW=X",
-          }
+          import re
+          from bs4 import BeautifulSoup
 
-
-          def get_change(ticker):
-
-              df = yf.Ticker(ticker).history(period="5d")
-              closes = df["Close"].dropna()
-
-              if len(closes) < 2:
-                  return None, None
-
-              previous = float(closes.iloc[-2])
-              current = float(closes.iloc[-1])
-
-              change = (
-                  current / previous - 1
-              ) * 100
-
-              return current, change
-
-
-          data = {}
-
-          for name, ticker in assets.items():
+          def read_sp_global_pmi():
 
               try:
-                  data[name] = get_change(ticker)
 
-              except Exception:
-                  data[name] = (None, None)
-
-
-          def market_line(name):
-
-              value, change = data[name]
-
-              if value is None:
-                  return f"{name}: 데이터 확인 실패"
-
-              arrow = "▲" if change >= 0 else "▼"
-
-              if name in [
-                  "USD/KRW",
-                  "JPY/KRW"
-              ]:
-
-                  return (
-                      f"{name}: "
-                      f"{value:,.2f}원 "
-                      f"{arrow}{abs(change):.2f}%"
+                  url = (
+                      "https://pmi.spglobal.com/Public/Release/"
+                      "ReleaseDates?language=en&os=0"
                   )
-
-              return (
-                  f"{name}: "
-                  f"{change:+.2f}%"
-              )
-
-
-          # =====================================
-          # 2. 분야별 뉴스
-          # =====================================
-
-          news_categories = [
-
-              (
-                  "🟢 NVIDIA / AI 반도체",
-                  "엔비디아 NVIDIA AI 반도체 when:2d"
-              ),
-
-              (
-                  "🟣 Micron / 메모리",
-                  "마이크론 Micron HBM 메모리 반도체 when:2d"
-              ),
-
-              (
-                  "🇺🇸 미국 증시",
-                  "미국 증시 나스닥 S&P500 반도체 when:1d"
-              ),
-
-              (
-                  "🤖 AI / 빅테크",
-                  "AI 빅테크 구글 마이크로소프트 메타 아마존 애플 when:2d"
-              ),
-
-              (
-                  "🇰🇷 한국 증시",
-                  "코스피 삼성전자 SK하이닉스 반도체 when:1d"
-              ),
-          ]
-
-
-          preferred_sources = [
-              "연합뉴스",
-              "한국경제",
-              "매일경제",
-              "서울경제",
-              "이데일리",
-              "머니투데이",
-              "조선비즈",
-              "전자신문",
-              "ZDNet",
-              "로이터",
-              "Reuters",
-          ]
-
-
-          blocked_sources = [
-              "supple.kr",
-              "eanews.kr",
-          ]
-
-
-          used_titles = set()
-          news_result = []
-
-
-          def get_news(query):
-
-              url = (
-                  "https://news.google.com/rss/search?"
-                  f"q={quote(query)}"
-                  "&hl=ko"
-                  "&gl=KR"
-                  "&ceid=KR:ko"
-              )
-
-              feed = feedparser.parse(url)
-
-              candidates = []
-
-              for entry in feed.entries[:30]:
-
-                  title = entry.title.strip()
-
-                  if title in used_titles:
-                      continue
-
-                  if any(
-                      blocked.lower()
-                      in title.lower()
-                      for blocked
-                      in blocked_sources
-                  ):
-                      continue
-
-                  # 한국어가 전혀 없는 제목 제외
-                  if not any(
-                      '\uac00' <= c <= '\ud7a3'
-                      for c in title
-                  ):
-                      continue
-
-                  timestamp = 0
-
-                  if hasattr(
-                      entry,
-                      "published_parsed"
-                  ):
-
-                      try:
-                          timestamp = (
-                              calendar.timegm(
-                                  entry.published_parsed
-                              )
-                          )
-
-                      except Exception:
-                          pass
-
-
-                  preferred = 0
-
-                  if any(
-                      source.lower()
-                      in title.lower()
-                      for source
-                      in preferred_sources
-                  ):
-                      preferred = 1
-
-
-                  candidates.append(
-                      (
-                          preferred,
-                          timestamp,
-                          title
-                      )
-                  )
-
-
-              if not candidates:
-                  return None
-
-
-              # 신뢰도 높은 매체 우선,
-              # 그 안에서는 최신 기사 우선
-              candidates.sort(
-                  key=lambda x: (
-                      x[0],
-                      x[1]
-                  ),
-                  reverse=True
-              )
-
-
-              return candidates[0][2]
-
-
-          for category, query in news_categories:
-
-              try:
-                  title = get_news(query)
-
-              except Exception:
-                  title = None
-
-
-              if title:
-
-                  used_titles.add(title)
-
-                  news_result.append(
-                      f"{category}\n{title}"
-                  )
-
-              else:
-
-                  news_result.append(
-                      f"{category}\n관련 뉴스 확인 실패"
-                  )
-
-
-          news_text = "\n\n".join(
-              news_result
-          )
-
-
-          # =====================================
-          # 3. 미국 중요 경제 일정
-          # =====================================
-
-          schedule_events = []
-
-
-          def event_datetime_kst(event):
-
-              dt = event.decoded(
-                  "DTSTART"
-              )
-
-
-              if isinstance(dt, datetime):
-
-                  if dt.tzinfo is None:
-
-                      dt = dt.replace(
-                          tzinfo=ET
-                      )
-
-                  return dt.astimezone(KST)
-
-
-              if isinstance(dt, date):
-
-                  dt = datetime.combine(
-                      dt,
-                      time(8, 30),
-                      tzinfo=ET
-                  )
-
-                  return dt.astimezone(KST)
-
-
-              return None
-
-
-          def read_ics(
-              url,
-              keyword_map
-          ):
-
-              try:
 
                   response = requests.get(
                       url,
@@ -355,195 +22,171 @@ jobs:
 
                   response.raise_for_status()
 
-                  cal = Calendar.from_ical(
-                      response.content
+                  soup = BeautifulSoup(
+                      response.text,
+                      "html.parser"
                   )
 
+                  lines = [
+                      re.sub(r"\s+", " ", line).strip()
+                      for line
+                      in soup.get_text("\n").splitlines()
+                      if line.strip()
+                  ]
 
-                  for event in cal.walk(
-                      "VEVENT"
-                  ):
+                  months = {
+                      "January": 1,
+                      "February": 2,
+                      "March": 3,
+                      "April": 4,
+                      "May": 5,
+                      "June": 6,
+                      "July": 7,
+                      "August": 8,
+                      "September": 9,
+                      "October": 10,
+                      "November": 11,
+                      "December": 12,
+                  }
 
-                      summary = str(
-                          event.get(
-                              "SUMMARY",
-                              ""
-                          )
-                      )
+                  current_year = now.year
+                  current_month = None
+                  current_day = None
 
+                  for line in lines:
 
-                      display_name = None
-
-
-                      for keyword, name in keyword_map:
-
-                          if (
-                              keyword.lower()
-                              in summary.lower()
-                          ):
-
-                              display_name = name
-                              break
-
-
-                      if not display_name:
-                          continue
-
-
-                      dt = event_datetime_kst(
-                          event
-                      )
-
-
-                      if dt is None:
-                          continue
-
-
-                      # 오늘부터 7일 이내만
-                      if (
-                          today
-                          <= dt.date()
-                          <= today + timedelta(days=7)
+                      # 연도
+                      if re.fullmatch(
+                          r"20\d{2}",
+                          line
                       ):
 
-                          schedule_events.append(
-                              {
-                                  "dt": dt,
-                                  "name": display_name
-                              }
+                          current_year = int(line)
+                          continue
+
+
+                      # 날짜
+                      date_match = re.fullmatch(
+                          r"(January|February|March|April|May|June|"
+                          r"July|August|September|October|November|December)"
+                          r"\s+(\d{1,2})",
+                          line
+                      )
+
+                      if date_match:
+
+                          current_month = months[
+                              date_match.group(1)
+                          ]
+
+                          current_day = int(
+                              date_match.group(2)
                           )
 
-
-              except Exception:
-                  pass
+                          continue
 
 
-          # 미국 노동통계국 BLS
-          read_ics(
+                      # 발표시간 + 지표명
+                      event_match = re.match(
+                          r"(\d{2}:\d{2})\s*UTC\s+(.+)",
+                          line
+                      )
 
-              "https://www.bls.gov/"
-              "schedule/news_release/bls.ics",
-
-              [
-
-                  (
-                      "Consumer Price Index",
-                      "🇺🇸 미국 CPI"
-                  ),
-
-                  (
-                      "Producer Price Index",
-                      "🇺🇸 미국 PPI"
-                  ),
-
-                  (
-                      "Employment Situation",
-                      "🇺🇸 미국 고용보고서"
-                  ),
-
-                  (
-                      "Job Openings and "
-                      "Labor Turnover Survey",
-                      "🇺🇸 미국 JOLTS"
-                  ),
-
-                  (
-                      "Import and Export "
-                      "Price Indexes",
-                      "🇺🇸 미국 수출입물가"
-                  ),
-              ]
-          )
+                      if not (
+                          event_match
+                          and current_month
+                          and current_day
+                      ):
+                          continue
 
 
-          # 미국 경제분석국 BEA
-          read_ics(
-
-              "https://www.bea.gov/"
-              "news/schedule/ics/"
-              "online-calendar-subscription.ics",
-
-              [
-
-                  (
-                      "Personal Income and Outlays",
-                      "🇺🇸 미국 PCE·개인소득"
-                  ),
-
-                  (
-                      "Gross Domestic Product",
-                      "🇺🇸 미국 GDP"
-                  ),
-
-                  (
-                      "International Trade "
-                      "in Goods and Services",
-                      "🇺🇸 미국 무역수지"
-                  ),
-              ]
-          )
+                      event_name = (
+                          event_match.group(2)
+                          .strip()
+                      )
 
 
-          # =====================================
-          # 4. FOMC 금리결정 일정
-          # =====================================
-
-          # 미국 현지 기준 회의 마지막 날
-          fomc_dates = [
-
-              "2026-10-28",
-              "2026-12-09",
-
-              "2027-01-27",
-              "2027-03-17",
-              "2027-04-28",
-              "2027-06-09",
-              "2027-07-28",
-              "2027-09-15",
-              "2027-10-27",
-              "2027-12-08",
-          ]
+                      # 미국 PMI만 사용
+                      if (
+                          "S&P Global" not in event_name
+                          or "US" not in event_name
+                          or "PMI" not in event_name
+                      ):
+                          continue
 
 
-          for value in fomc_dates:
-
-              try:
-
-                  d = datetime.strptime(
-                      value,
-                      "%Y-%m-%d"
-                  )
+                      hour, minute = map(
+                          int,
+                          event_match
+                          .group(1)
+                          .split(":")
+                      )
 
 
-                  # FOMC 성명은 보통
-                  # 미 동부 오후 2시
-                  dt_et = datetime(
-                      d.year,
-                      d.month,
-                      d.day,
-                      14,
-                      0,
-                      tzinfo=ET
-                  )
+                      dt_utc = datetime(
+                          current_year,
+                          current_month,
+                          current_day,
+                          hour,
+                          minute,
+                          tzinfo=ZoneInfo("UTC")
+                      )
 
 
-                  dt_kst = dt_et.astimezone(
-                      KST
-                  )
+                      dt_kst = (
+                          dt_utc.astimezone(KST)
+                      )
 
 
-                  if (
-                      today
-                      <= dt_kst.date()
-                      <= today
-                      + timedelta(days=7)
-                  ):
+                      # 오늘부터 7일 이내
+                      if not (
+                          today
+                          <= dt_kst.date()
+                          <= today
+                          + timedelta(days=7)
+                      ):
+                          continue
+
+
+                      if "Flash US PMI" in event_name:
+
+                          name = (
+                              "🔥 미국 S&P Global "
+                              "Flash PMI"
+                          )
+
+                      elif (
+                          "Manufacturing PMI"
+                          in event_name
+                      ):
+
+                          name = (
+                              "🇺🇸 미국 S&P "
+                              "제조업 PMI"
+                          )
+
+                      elif (
+                          "Services PMI"
+                          in event_name
+                      ):
+
+                          name = (
+                              "🇺🇸 미국 S&P "
+                              "서비스업 PMI"
+                          )
+
+                      else:
+
+                          name = (
+                              "🇺🇸 미국 "
+                              "S&P Global PMI"
+                          )
+
 
                       schedule_events.append(
                           {
                               "dt": dt_kst,
-                              "name":
-                              "🏦 FOMC 금리결정"
+                              "name": name
                           }
                       )
 
@@ -552,176 +195,4 @@ jobs:
                   pass
 
 
-          # 중복 제거
-          unique = {}
-
-          for item in schedule_events:
-
-              key = (
-                  item["dt"].strftime(
-                      "%Y%m%d%H%M"
-                  ),
-                  item["name"]
-              )
-
-              unique[key] = item
-
-
-          schedule_events = list(
-              unique.values()
-          )
-
-
-          schedule_events.sort(
-              key=lambda x: x["dt"]
-          )
-
-
-          today_events = [
-              x
-              for x in schedule_events
-              if x["dt"].date() == today
-          ]
-
-
-          future_events = [
-              x
-              for x in schedule_events
-              if x["dt"].date() > today
-          ]
-
-
-          schedule_lines = []
-
-
-          if today_events:
-
-              for item in today_events:
-
-                  schedule_lines.append(
-                      f"• {item['dt'].strftime('%H:%M')} "
-                      f"{item['name']}"
-                  )
-
-          else:
-
-              schedule_lines.append(
-                  "• 오늘 예정된 주요 미국 지표 없음"
-              )
-
-
-          if future_events:
-
-              schedule_lines.append(
-                  ""
-              )
-
-              schedule_lines.append(
-                  "⏭ 다음 주요 일정"
-              )
-
-
-              for item in future_events[:3]:
-
-                  schedule_lines.append(
-                      "• "
-                      f"{item['dt'].month}/"
-                      f"{item['dt'].day} "
-                      f"{item['dt'].strftime('%H:%M')} "
-                      f"{item['name']}"
-                  )
-
-
-          schedule_text = "\n".join(
-              schedule_lines
-          )
-
-
-          # =====================================
-          # 5. 날짜
-          # =====================================
-
-          weekdays = [
-              "월요일",
-              "화요일",
-              "수요일",
-              "목요일",
-              "금요일",
-              "토요일",
-              "일요일"
-          ]
-
-
-          date_text = (
-              f"{now.year}년 "
-              f"{now.month:02d}월 "
-              f"{now.day:02d}일 "
-              f"{weekdays[now.weekday()]}"
-          )
-
-
-          # =====================================
-          # 6. 메시지 작성
-          # =====================================
-
-          message = f"""☀️ BONG Morning Brief
-          {date_text}
-
-          📊 밤사이 시장
-          {market_line("NASDAQ")}
-          {market_line("S&P500")}
-          {market_line("필라델피아 반도체")}
-
-          💵 환율
-          {market_line("USD/KRW")}
-          {market_line("JPY/KRW")}
-
-          💼 미국 반도체
-          NVIDIA: {market_line("NVIDIA").split(": ",1)[1]}
-          Micron: {market_line("Micron").split(": ",1)[1]}
-
-          📰 관심 뉴스 TOP 5
-          {news_text}
-
-          📅 오늘 중요 일정
-          {schedule_text}
-
-          ─────────────
-          BONG Morning Brief
-          """
-
-
-          message = "\n".join(
-              line.strip()
-              for line
-              in message.splitlines()
-          )
-
-
-          # =====================================
-          # 7. Telegram 전송
-          # =====================================
-
-          response = requests.post(
-
-              f"https://api.telegram.org/"
-              f"bot{os.environ['BOT_TOKEN']}"
-              f"/sendMessage",
-
-              data={
-                  "chat_id":
-                  os.environ["CHAT_ID"],
-
-                  "text":
-                  message
-              },
-
-              timeout=30
-          )
-
-
-          response.raise_for_status()
-
-          PY
-
-          python /tmp/brief.py
+          read_sp_global_pmi()
