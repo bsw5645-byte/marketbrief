@@ -1,198 +1,489 @@
+name: BONG Morning Brief
+
+on:
+  schedule:
+    # 한국시간 월~금 오전 8시
+    - cron: '0 23 * * 0-4'
+  workflow_dispatch:
+
+jobs:
+  morning-brief:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install packages
+        run: pip install yfinance requests feedparser
+
+      - name: Create and send morning brief
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+        run: |
+          cat << 'PY' > /tmp/brief.py
+          import os
+          import requests
+          import feedparser
+          import yfinance as yf
+
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          from urllib.parse import quote
+
+
+          KST = ZoneInfo("Asia/Seoul")
+          now = datetime.now(KST)
+          today = now.date()
+
+
           # =====================================
-          # S&P Global 미국 PMI 일정 추가
+          # 1. 시장 데이터
           # =====================================
 
-          import re
-          from bs4 import BeautifulSoup
+          assets = {
+              "NASDAQ": "^IXIC",
+              "S&P500": "^GSPC",
+              "필라델피아 반도체": "^SOX",
+              "NVIDIA": "NVDA",
+              "Micron": "MU",
+              "USD/KRW": "KRW=X",
+              "JPY/KRW": "JPYKRW=X",
+          }
 
-          def read_sp_global_pmi():
+
+          def get_change(ticker):
+              df = yf.Ticker(ticker).history(period="5d")
+              closes = df["Close"].dropna()
+
+              if len(closes) < 2:
+                  return None, None
+
+              previous = float(closes.iloc[-2])
+              current = float(closes.iloc[-1])
+              change = (current / previous - 1) * 100
+
+              return current, change
+
+
+          data = {}
+
+          for name, ticker in assets.items():
+              try:
+                  data[name] = get_change(ticker)
+              except Exception:
+                  data[name] = (None, None)
+
+
+          def market_line(name):
+              value, change = data[name]
+
+              if value is None:
+                  return f"{name}: 데이터 확인 실패"
+
+              arrow = "▲" if change >= 0 else "▼"
+
+              if name in ["USD/KRW", "JPY/KRW"]:
+                  return (
+                      f"{name}: {value:,.2f}원 "
+                      f"{arrow}{abs(change):.2f}%"
+                  )
+
+              return f"{name}: {change:+.2f}%"
+
+
+          # =====================================
+          # 2. 관심 뉴스 - 분야별 1개
+          # =====================================
+
+          categories = [
+              ("🟢 NVIDIA / AI 반도체",
+               "엔비디아 NVIDIA AI 반도체 when:2d"),
+
+              ("🟣 Micron / 메모리",
+               "마이크론 Micron HBM 메모리 반도체 when:2d"),
+
+              ("🇺🇸 미국 증시",
+               "미국 증시 나스닥 S&P500 반도체 when:1d"),
+
+              ("🤖 AI / 빅테크",
+               "AI 빅테크 구글 마이크로소프트 메타 아마존 when:2d"),
+
+              ("🇰🇷 한국 증시",
+               "코스피 삼성전자 SK하이닉스 반도체 when:1d"),
+          ]
+
+
+          used_titles = set()
+          news_lines = []
+
+
+          for category, query in categories:
+
+              url = (
+                  "https://news.google.com/rss/search?"
+                  f"q={quote(query)}"
+                  "&hl=ko&gl=KR&ceid=KR:ko"
+              )
+
+              title = None
 
               try:
+                  feed = feedparser.parse(url)
 
-                  url = (
-                      "https://pmi.spglobal.com/Public/Release/"
-                      "ReleaseDates?language=en&os=0"
-                  )
+                  for entry in feed.entries[:20]:
+                      candidate = entry.title.strip()
 
-                  response = requests.get(
-                      url,
-                      headers=HEADERS,
-                      timeout=20
-                  )
-
-                  response.raise_for_status()
-
-                  soup = BeautifulSoup(
-                      response.text,
-                      "html.parser"
-                  )
-
-                  lines = [
-                      re.sub(r"\s+", " ", line).strip()
-                      for line
-                      in soup.get_text("\n").splitlines()
-                      if line.strip()
-                  ]
-
-                  months = {
-                      "January": 1,
-                      "February": 2,
-                      "March": 3,
-                      "April": 4,
-                      "May": 5,
-                      "June": 6,
-                      "July": 7,
-                      "August": 8,
-                      "September": 9,
-                      "October": 10,
-                      "November": 11,
-                      "December": 12,
-                  }
-
-                  current_year = now.year
-                  current_month = None
-                  current_day = None
-
-                  for line in lines:
-
-                      # 연도
-                      if re.fullmatch(
-                          r"20\d{2}",
-                          line
-                      ):
-
-                          current_year = int(line)
+                      if candidate in used_titles:
                           continue
 
-
-                      # 날짜
-                      date_match = re.fullmatch(
-                          r"(January|February|March|April|May|June|"
-                          r"July|August|September|October|November|December)"
-                          r"\s+(\d{1,2})",
-                          line
-                      )
-
-                      if date_match:
-
-                          current_month = months[
-                              date_match.group(1)
-                          ]
-
-                          current_day = int(
-                              date_match.group(2)
-                          )
-
-                          continue
-
-
-                      # 발표시간 + 지표명
-                      event_match = re.match(
-                          r"(\d{2}:\d{2})\s*UTC\s+(.+)",
-                          line
-                      )
-
-                      if not (
-                          event_match
-                          and current_month
-                          and current_day
+                      if not any(
+                          '\uac00' <= c <= '\ud7a3'
+                          for c in candidate
                       ):
                           continue
 
-
-                      event_name = (
-                          event_match.group(2)
-                          .strip()
-                      )
-
-
-                      # 미국 PMI만 사용
-                      if (
-                          "S&P Global" not in event_name
-                          or "US" not in event_name
-                          or "PMI" not in event_name
-                      ):
-                          continue
-
-
-                      hour, minute = map(
-                          int,
-                          event_match
-                          .group(1)
-                          .split(":")
-                      )
-
-
-                      dt_utc = datetime(
-                          current_year,
-                          current_month,
-                          current_day,
-                          hour,
-                          minute,
-                          tzinfo=ZoneInfo("UTC")
-                      )
-
-
-                      dt_kst = (
-                          dt_utc.astimezone(KST)
-                      )
-
-
-                      # 오늘부터 7일 이내
-                      if not (
-                          today
-                          <= dt_kst.date()
-                          <= today
-                          + timedelta(days=7)
-                      ):
-                          continue
-
-
-                      if "Flash US PMI" in event_name:
-
-                          name = (
-                              "🔥 미국 S&P Global "
-                              "Flash PMI"
-                          )
-
-                      elif (
-                          "Manufacturing PMI"
-                          in event_name
-                      ):
-
-                          name = (
-                              "🇺🇸 미국 S&P "
-                              "제조업 PMI"
-                          )
-
-                      elif (
-                          "Services PMI"
-                          in event_name
-                      ):
-
-                          name = (
-                              "🇺🇸 미국 S&P "
-                              "서비스업 PMI"
-                          )
-
-                      else:
-
-                          name = (
-                              "🇺🇸 미국 "
-                              "S&P Global PMI"
-                          )
-
-
-                      schedule_events.append(
-                          {
-                              "dt": dt_kst,
-                              "name": name
-                          }
-                      )
-
+                      title = candidate
+                      break
 
               except Exception:
                   pass
 
 
-          read_sp_global_pmi()
+              if title:
+                  used_titles.add(title)
+                  news_lines.append(
+                      f"{category}\n{title}"
+                  )
+              else:
+                  news_lines.append(
+                      f"{category}\n관련 뉴스 확인 실패"
+                  )
+
+
+          news_text = "\n\n".join(news_lines)
+
+
+          # =====================================
+          # 3. 미국 중요 경제 일정
+          # PMI / 실업수당 / FOMC 등
+          # =====================================
+
+          calendar_url = (
+              "https://nfs.faireconomy.media/"
+              "ff_calendar_thisweek.json"
+          )
+
+
+          important_keywords = [
+              "PMI",
+              "ISM",
+              "CPI",
+              "PPI",
+              "PCE",
+              "GDP",
+              "FOMC",
+              "Powell",
+              "Employment",
+              "Unemployment",
+              "Non-Farm",
+              "Jobless",
+              "Claims",
+              "JOLTS",
+              "ADP",
+              "Retail Sales",
+              "Durable Goods",
+              "Consumer Confidence",
+              "Consumer Sentiment",
+              "UoM",
+              "New Home Sales",
+          ]
+
+
+          korean_names = {
+              "Flash Manufacturing PMI":
+                  "미국 Flash 제조업 PMI",
+
+              "Flash Services PMI":
+                  "미국 Flash 서비스업 PMI",
+
+              "Unemployment Claims":
+                  "미국 신규 실업수당 청구",
+
+              "Core Durable Goods Orders m/m":
+                  "미국 핵심 내구재 주문",
+
+              "Durable Goods Orders m/m":
+                  "미국 내구재 주문",
+
+              "Revised UoM Consumer Sentiment":
+                  "미국 미시간대 소비자심리지수",
+
+              "Revised UoM Inflation Expectations":
+                  "미국 미시간대 기대인플레이션",
+
+              "New Home Sales":
+                  "미국 신규주택판매",
+          }
+
+
+          events = []
+
+          try:
+              r = requests.get(
+                  calendar_url,
+                  timeout=20
+              )
+
+              r.raise_for_status()
+
+              raw_events = r.json()
+
+
+              for event in raw_events:
+
+                  if event.get("country") != "USD":
+                      continue
+
+
+                  title = event.get(
+                      "title",
+                      ""
+                  )
+
+
+                  impact = event.get(
+                      "impact",
+                      ""
+                  )
+
+
+                  keyword_match = any(
+                      keyword.lower()
+                      in title.lower()
+                      for keyword in important_keywords
+                  )
+
+
+                  if (
+                      impact not in ["High", "Medium"]
+                      and not keyword_match
+                  ):
+                      continue
+
+
+                  try:
+                      dt = datetime.fromisoformat(
+                          event["date"]
+                      ).astimezone(KST)
+
+                  except Exception:
+                      continue
+
+
+                  if dt.date() < today:
+                      continue
+
+
+                  display_name = korean_names.get(
+                      title,
+                      title
+                  )
+
+
+                  forecast = event.get(
+                      "forecast",
+                      ""
+                  )
+
+
+                  previous = event.get(
+                      "previous",
+                      ""
+                  )
+
+
+                  events.append({
+                      "dt": dt,
+                      "title": display_name,
+                      "forecast": forecast,
+                      "previous": previous,
+                      "impact": impact,
+                  })
+
+
+          except Exception:
+              pass
+
+
+          events.sort(
+              key=lambda x: x["dt"]
+          )
+
+
+          today_events = [
+              e for e in events
+              if e["dt"].date() == today
+          ]
+
+
+          future_events = [
+              e for e in events
+              if e["dt"].date() > today
+          ]
+
+
+          schedule_lines = []
+
+
+          if today_events:
+
+              for e in today_events:
+
+                  line = (
+                      f"• {e['dt'].strftime('%H:%M')} "
+                      f"{e['title']}"
+                  )
+
+
+                  extra = []
+
+                  if e["forecast"]:
+                      extra.append(
+                          f"예상 {e['forecast']}"
+                      )
+
+                  if e["previous"]:
+                      extra.append(
+                          f"이전 {e['previous']}"
+                      )
+
+
+                  if extra:
+                      line += (
+                          " (" +
+                          " / ".join(extra) +
+                          ")"
+                      )
+
+
+                  schedule_lines.append(line)
+
+          else:
+              schedule_lines.append(
+                  "• 오늘 예정된 주요 미국 경제지표 없음"
+              )
+
+
+          if future_events:
+
+              schedule_lines.append("")
+              schedule_lines.append(
+                  "⏭ 다음 주요 일정"
+              )
+
+
+              for e in future_events[:4]:
+
+                  schedule_lines.append(
+                      f"• {e['dt'].month}/"
+                      f"{e['dt'].day} "
+                      f"{e['dt'].strftime('%H:%M')} "
+                      f"{e['title']}"
+                  )
+
+
+          schedule_text = "\n".join(
+              schedule_lines
+          )
+
+
+          # =====================================
+          # 4. 날짜
+          # =====================================
+
+          weekdays = [
+              "월요일",
+              "화요일",
+              "수요일",
+              "목요일",
+              "금요일",
+              "토요일",
+              "일요일",
+          ]
+
+
+          date_text = (
+              f"{now.year}년 "
+              f"{now.month:02d}월 "
+              f"{now.day:02d}일 "
+              f"{weekdays[now.weekday()]}"
+          )
+
+
+          # =====================================
+          # 5. 메시지
+          # =====================================
+
+          message = f"""☀️ BONG Morning Brief
+          {date_text}
+
+          📊 밤사이 시장
+          {market_line("NASDAQ")}
+          {market_line("S&P500")}
+          {market_line("필라델피아 반도체")}
+
+          💵 환율
+          {market_line("USD/KRW")}
+          {market_line("JPY/KRW")}
+
+          💼 미국 반도체
+          NVIDIA: {market_line("NVIDIA").split(": ", 1)[1]}
+          Micron: {market_line("Micron").split(": ", 1)[1]}
+
+          📰 관심 뉴스 TOP 5
+          {news_text}
+
+          📅 오늘 중요 일정
+          {schedule_text}
+
+          ─────────────
+          BONG Morning Brief
+          """
+
+
+          message = "\n".join(
+              line.strip()
+              for line in message.splitlines()
+          )
+
+
+          # =====================================
+          # 6. Telegram 전송
+          # =====================================
+
+          response = requests.post(
+              f"https://api.telegram.org/"
+              f"bot{os.environ['BOT_TOKEN']}/sendMessage",
+
+              data={
+                  "chat_id":
+                      os.environ["CHAT_ID"],
+
+                  "text":
+                      message,
+              },
+
+              timeout=30
+          )
+
+
+          response.raise_for_status()
+
+          PY
+
+          python /tmp/brief.py
