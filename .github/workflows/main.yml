@@ -2,14 +2,13 @@ name: BONG Morning Brief
 
 on:
   schedule:
-    # 한국시간 월~금 오전 8시
+    # 한국시간 월~금 오전 8시 (UTC 일~목 23시)
     - cron: '0 23 * * 0-4'
   workflow_dispatch:
 
 jobs:
   morning-brief:
     runs-on: ubuntu-latest
-
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -23,467 +22,211 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
         run: |
           cat << 'PY' > /tmp/brief.py
           import os
-          import requests
-          import feedparser
-          import yfinance as yf
-
           from datetime import datetime
-          from zoneinfo import ZoneInfo
           from urllib.parse import quote
+          from zoneinfo import ZoneInfo
 
+          import feedparser
+          import requests
+          import yfinance as yf
 
           KST = ZoneInfo("Asia/Seoul")
           now = datetime.now(KST)
           today = now.date()
 
-
-          # =====================================
-          # 1. 시장 데이터
-          # =====================================
-
+          # 1. 밤사이 시장: 개별 NVIDIA/Micron 주가는 제외
           assets = {
               "NASDAQ": "^IXIC",
-              "S&P500": "^GSPC",
+              "S&P 500": "^GSPC",
               "필라델피아 반도체": "^SOX",
-              "NVIDIA": "NVDA",
-              "Micron": "MU",
               "USD/KRW": "KRW=X",
               "JPY/KRW": "JPYKRW=X",
           }
 
-
           def get_change(ticker):
-              df = yf.Ticker(ticker).history(period="5d")
-              closes = df["Close"].dropna()
-
+              closes = yf.Ticker(ticker).history(period="5d")["Close"].dropna()
               if len(closes) < 2:
                   return None, None
+              previous, current = float(closes.iloc[-2]), float(closes.iloc[-1])
+              return current, (current / previous - 1) * 100
 
-              previous = float(closes.iloc[-2])
-              current = float(closes.iloc[-1])
-              change = (current / previous - 1) * 100
-
-              return current, change
-
-
-          data = {}
-
+          market = {}
           for name, ticker in assets.items():
               try:
-                  data[name] = get_change(ticker)
+                  market[name] = get_change(ticker)
               except Exception:
-                  data[name] = (None, None)
-
+                  market[name] = (None, None)
 
           def market_line(name):
-              value, change = data[name]
-
+              value, change = market[name]
               if value is None:
-                  return f"{name}: 데이터 확인 실패"
-
+                  return f"• {name}: 확인 실패"
               arrow = "▲" if change >= 0 else "▼"
+              if name in {"USD/KRW", "JPY/KRW"}:
+                  return f"• {name}: {value:,.2f}원 {arrow}{abs(change):.2f}%"
+              return f"• {name}: {change:+.2f}%"
 
-              if name in ["USD/KRW", "JPY/KRW"]:
-                  return (
-                      f"{name}: {value:,.2f}원 "
-                      f"{arrow}{abs(change):.2f}%"
-                  )
+          def one_line_summary():
+              nasdaq = market["NASDAQ"][1]
+              sox = market["필라델피아 반도체"][1]
+              if nasdaq is None or sox is None:
+                  return "전일 대비: 주요 시장 데이터를 모두 확인하지 못했습니다."
+              tone = "위험선호" if nasdaq >= 0 and sox >= 0 else "경계"
+              leader = "반도체" if abs(sox) >= abs(nasdaq) else "나스닥"
+              return f"전일 대비: {leader} 중심 {tone} 흐름 (나스닥 {nasdaq:+.2f}%, SOX {sox:+.2f}%)."
 
-              return f"{name}: {change:+.2f}%"
-
-
-          # =====================================
-          # 2. 관심 뉴스 - 분야별 1개
-          # =====================================
-
+          # 2. 뉴스: 분야별 복수 쿼리, 중복/저품질 제목을 제외하고 최신 기사 선택
           categories = [
-              ("🟢 NVIDIA / AI 반도체",
-               "엔비디아 NVIDIA AI 반도체 when:2d"),
-
-              ("🟣 Micron / 메모리",
-               "마이크론 Micron HBM 메모리 반도체 when:2d"),
-
-              ("🇺🇸 미국 증시",
-               "미국 증시 나스닥 S&P500 반도체 when:1d"),
-
-              ("🤖 AI / 빅테크",
-               "AI 빅테크 구글 마이크로소프트 메타 아마존 when:2d"),
-
-              ("🇰🇷 한국 증시",
-               "코스피 삼성전자 SK하이닉스 반도체 when:1d"),
+              ("🟢 AI 반도체", ["NVIDIA AI 반도체 when:2d", "엔비디아 HBM 데이터센터 when:2d"]),
+              ("🟣 메모리", ["Micron HBM 메모리 반도체 when:2d", "삼성전자 SK하이닉스 HBM when:2d"]),
+              ("🇺🇸 미국 증시", ["미국 증시 나스닥 S&P500 반도체 when:1d"]),
+              ("🤖 빅테크", ["AI 빅테크 구글 마이크로소프트 메타 아마존 when:2d"]),
+              ("🇰🇷 한국 증시", ["코스피 삼성전자 SK하이닉스 증시 when:1d"]),
           ]
-
-
+          blocked = ("youtube", "영상", "포토", "오늘의 운세", "부고")
           used_titles = set()
+
+          def news_item(queries):
+              candidates = []
+              for query in queries:
+                  url = "https://news.google.com/rss/search?" + f"q={quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
+                  try:
+                      entries = feedparser.parse(url).entries[:15]
+                  except Exception:
+                      entries = []
+                  for entry in entries:
+                      title = entry.get("title", "").strip()
+                      if not title or title in used_titles or any(word in title.lower() for word in blocked):
+                          continue
+                      korean = sum('\uac00' <= char <= '\ud7a3' for char in title)
+                      score = korean * 3 + (2 if entry.get("published") else 0)
+                      candidates.append((score, title, entry.get("source", {}).get("title", "")))
+              if not candidates:
+                  return None
+              _, title, source = max(candidates, key=lambda item: item[0])
+              used_titles.add(title)
+              return f"{title}" + (f" — {source}" if source else "")
+
           news_lines = []
-
-
-          for category, query in categories:
-
-              url = (
-                  "https://news.google.com/rss/search?"
-                  f"q={quote(query)}"
-                  "&hl=ko&gl=KR&ceid=KR:ko"
-              )
-
-              title = None
-
-              try:
-                  feed = feedparser.parse(url)
-
-                  for entry in feed.entries[:20]:
-                      candidate = entry.title.strip()
-
-                      if candidate in used_titles:
-                          continue
-
-                      if not any(
-                          '\uac00' <= c <= '\ud7a3'
-                          for c in candidate
-                      ):
-                          continue
-
-                      title = candidate
-                      break
-
-              except Exception:
-                  pass
-
-
-              if title:
-                  used_titles.add(title)
-                  news_lines.append(
-                      f"{category}\n{title}"
-                  )
-              else:
-                  news_lines.append(
-                      f"{category}\n관련 뉴스 확인 실패"
-                  )
-
-
+          for category, queries in categories:
+              item = news_item(queries)
+              news_lines.append(f"{category}\n• {item or '관련 주요 기사 확인 실패'}")
           news_text = "\n\n".join(news_lines)
 
-
-          # =====================================
-          # 3. 미국 중요 경제 일정
-          # PMI / 실업수당 / FOMC 등
-          # =====================================
-
-          calendar_url = (
-              "https://nfs.faireconomy.media/"
-              "ff_calendar_thisweek.json"
-          )
-
-
-          important_keywords = [
-              "PMI",
-              "ISM",
-              "CPI",
-              "PPI",
-              "PCE",
-              "GDP",
-              "FOMC",
-              "Powell",
-              "Employment",
-              "Unemployment",
-              "Non-Farm",
-              "Jobless",
-              "Claims",
-              "JOLTS",
-              "ADP",
-              "Retail Sales",
-              "Durable Goods",
-              "Consumer Confidence",
-              "Consumer Sentiment",
-              "UoM",
-              "New Home Sales",
-          ]
-
-
-          korean_names = {
-              "Flash Manufacturing PMI":
-                  "미국 Flash 제조업 PMI",
-
-              "Flash Services PMI":
-                  "미국 Flash 서비스업 PMI",
-
-              "Unemployment Claims":
-                  "미국 신규 실업수당 청구",
-
-              "Core Durable Goods Orders m/m":
-                  "미국 핵심 내구재 주문",
-
-              "Durable Goods Orders m/m":
-                  "미국 내구재 주문",
-
-              "Revised UoM Consumer Sentiment":
-                  "미국 미시간대 소비자심리지수",
-
-              "Revised UoM Inflation Expectations":
-                  "미국 미시간대 기대인플레이션",
-
-              "New Home Sales":
-                  "미국 신규주택판매",
-          }
-
-
-          events = []
-
+          # 3. 경제/증시 일정: Forex Factory 주간 캘린더에서 미국과 한국을 분리
+          calendar_url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+          keywords = ("PMI", "ISM", "CPI", "PPI", "PCE", "GDP", "FOMC", "Powell", "Employment",
+                      "Unemployment", "Non-Farm", "Jobless", "Claims", "JOLTS", "ADP", "Retail Sales",
+                      "Durable Goods", "Consumer Confidence", "Consumer Sentiment", "UoM", "New Home Sales",
+                      "Interest Rate", "Trade Balance")
+          events = {"USD": [], "KRW": []}
           try:
-              r = requests.get(
-                  calendar_url,
-                  timeout=20
-              )
-
-              r.raise_for_status()
-
-              raw_events = r.json()
-
-
+              raw_events = requests.get(calendar_url, timeout=20).json()
               for event in raw_events:
-
-                  if event.get("country") != "USD":
+                  country = event.get("country")
+                  title = event.get("title", "")
+                  if country not in events:
                       continue
-
-
-                  title = event.get(
-                      "title",
-                      ""
-                  )
-
-
-                  impact = event.get(
-                      "impact",
-                      ""
-                  )
-
-
-                  keyword_match = any(
-                      keyword.lower()
-                      in title.lower()
-                      for keyword in important_keywords
-                  )
-
-
-                  if (
-                      impact not in ["High", "Medium"]
-                      and not keyword_match
-                  ):
+                  if event.get("impact") not in {"High", "Medium"} and not any(k.lower() in title.lower() for k in keywords):
                       continue
-
-
                   try:
-                      dt = datetime.fromisoformat(
-                          event["date"]
-                      ).astimezone(KST)
-
+                      dt = datetime.fromisoformat(event["date"]).astimezone(KST)
                   except Exception:
                       continue
-
-
-                  if dt.date() < today:
-                      continue
-
-
-                  display_name = korean_names.get(
-                      title,
-                      title
-                  )
-
-
-                  forecast = event.get(
-                      "forecast",
-                      ""
-                  )
-
-
-                  previous = event.get(
-                      "previous",
-                      ""
-                  )
-
-
-                  events.append({
-                      "dt": dt,
-                      "title": display_name,
-                      "forecast": forecast,
-                      "previous": previous,
-                      "impact": impact,
-                  })
-
-
+                  if dt.date() >= today:
+                      events[country].append({"dt": dt, "title": title, "forecast": event.get("forecast", ""), "previous": event.get("previous", "")})
           except Exception:
               pass
+          for country in events:
+              events[country].sort(key=lambda event: event["dt"])
 
+          def schedule_text(country, empty):
+              relevant = events[country]
+              if not relevant:
+                  return f"• {empty}"
+              lines = []
+              for event in relevant[:5]:
+                  day = "오늘" if event["dt"].date() == today else f"{event['dt'].month}/{event['dt'].day}"
+                  details = []
+                  if event["forecast"]:
+                      details.append(f"예상 {event['forecast']}")
+                  if event["previous"]:
+                      details.append(f"이전 {event['previous']}")
+                  suffix = f" ({' / '.join(details)})" if details else ""
+                  lines.append(f"• {day} {event['dt'].strftime('%H:%M')} | {event['title']}{suffix}")
+              return "\n".join(lines)
 
-          events.sort(
-              key=lambda x: x["dt"]
-          )
+          # 4. 빅테크 10개: 앞으로 7일 이내 실적을 매일 D-day로 표기
+          earnings_watch = {
+              "Apple": "AAPL", "Microsoft": "MSFT", "Alphabet": "GOOGL", "Amazon": "AMZN",
+              "Meta": "META", "NVIDIA": "NVDA", "Tesla": "TSLA", "Broadcom": "AVGO",
+              "TSMC": "TSM", "Micron": "MU",
+          }
+          earnings = []
+          for company, symbol in earnings_watch.items():
+              try:
+                  dates = yf.Ticker(symbol).get_earnings_dates(limit=12)
+                  if dates is None or dates.empty:
+                      continue
+                  for timestamp in dates.index:
+                      if timestamp.tzinfo is None:
+                          date = timestamp.date()
+                      else:
+                          date = timestamp.tz_convert(KST).date()
+                      days = (date - today).days
+                      if 0 <= days <= 7:
+                          earnings.append((date, f"• D-{days} | {date.month}/{date.day} {company} ({symbol})"))
+                          break
+              except Exception:
+                  continue
+          earnings.sort(key=lambda item: item[0])
+          earnings_text = "\n".join(item[1] for item in earnings) or "• 향후 7일 내 확인된 실적 발표 없음"
 
+          weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+          date_text = f"{now.year}년 {now.month:02d}월 {now.day:02d}일 {weekdays[now.weekday()]}"
 
-          today_events = [
-              e for e in events
-              if e["dt"].date() == today
-          ]
-
-
-          future_events = [
-              e for e in events
-              if e["dt"].date() > today
-          ]
-
-
-          schedule_lines = []
-
-
-          if today_events:
-
-              for e in today_events:
-
-                  line = (
-                      f"• {e['dt'].strftime('%H:%M')} "
-                      f"{e['title']}"
-                  )
-
-
-                  extra = []
-
-                  if e["forecast"]:
-                      extra.append(
-                          f"예상 {e['forecast']}"
-                      )
-
-                  if e["previous"]:
-                      extra.append(
-                          f"이전 {e['previous']}"
-                      )
-
-
-                  if extra:
-                      line += (
-                          " (" +
-                          " / ".join(extra) +
-                          ")"
-                      )
-
-
-                  schedule_lines.append(line)
-
-          else:
-              schedule_lines.append(
-                  "• 오늘 예정된 주요 미국 경제지표 없음"
-              )
-
-
-          if future_events:
-
-              schedule_lines.append("")
-              schedule_lines.append(
-                  "⏭ 다음 주요 일정"
-              )
-
-
-              for e in future_events[:4]:
-
-                  schedule_lines.append(
-                      f"• {e['dt'].month}/"
-                      f"{e['dt'].day} "
-                      f"{e['dt'].strftime('%H:%M')} "
-                      f"{e['title']}"
-                  )
-
-
-          schedule_text = "\n".join(
-              schedule_lines
-          )
-
-
-          # =====================================
-          # 4. 날짜
-          # =====================================
-
-          weekdays = [
-              "월요일",
-              "화요일",
-              "수요일",
-              "목요일",
-              "금요일",
-              "토요일",
-              "일요일",
-          ]
-
-
-          date_text = (
-              f"{now.year}년 "
-              f"{now.month:02d}월 "
-              f"{now.day:02d}일 "
-              f"{weekdays[now.weekday()]}"
-          )
-
-
-          # =====================================
-          # 5. 메시지
-          # =====================================
-
-          message = f"""☀️ BONG Morning Brief
+          message = f"""☀️ BONG MORNING BRIEF
           {date_text}
+
+          ━━━━━━━━━━━━━
+          📌 {one_line_summary()}
 
           📊 밤사이 시장
           {market_line("NASDAQ")}
-          {market_line("S&P500")}
+          {market_line("S&P 500")}
           {market_line("필라델피아 반도체")}
 
-          💵 환율
+          💱 환율
           {market_line("USD/KRW")}
           {market_line("JPY/KRW")}
 
-          💼 미국 반도체
-          NVIDIA: {market_line("NVIDIA").split(": ", 1)[1]}
-          Micron: {market_line("Micron").split(": ", 1)[1]}
+          📣 빅테크 실적 D-day (7일 내)
+          {earnings_text}
 
-          📰 관심 뉴스 TOP 5
+          📰 오늘의 핵심 뉴스
           {news_text}
 
-          📅 오늘 중요 일정
-          {schedule_text}
+          🇺🇸 미국 주요 일정
+          {schedule_text("USD", "오늘 이후 주요 미국 경제지표 없음")}
 
-          ─────────────
+          🇰🇷 한국 증시/경제 일정
+          {schedule_text("KRW", "오늘 이후 주요 한국 경제·증시 일정 없음")}
+
+          ━━━━━━━━━━━━━
           BONG Morning Brief
           """
-
-
-          message = "\n".join(
-              line.strip()
-              for line in message.splitlines()
-          )
-
-
-          # =====================================
-          # 6. Telegram 전송
-          # =====================================
+          message = "\n".join(line.strip() for line in message.splitlines())
 
           response = requests.post(
-              f"https://api.telegram.org/"
-              f"bot{os.environ['BOT_TOKEN']}/sendMessage",
-
-              data={
-                  "chat_id":
-                      os.environ["CHAT_ID"],
-
-                  "text":
-                      message,
-              },
-
-              timeout=30
+              f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
+              data={"chat_id": os.environ["CHAT_ID"], "text": message},
+              timeout=30,
           )
-
-
           response.raise_for_status()
-
           PY
 
           python /tmp/brief.py
+
