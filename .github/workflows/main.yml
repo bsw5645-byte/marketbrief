@@ -2,8 +2,8 @@ name: BONG Morning Brief
 
 on:
   schedule:
-    # 한국시간 월~금 오전 8시 (UTC 일~목 23시)
-    - cron: '0 23 * * 0-4'
+    # 한국시간 월~토 오전 8시 (UTC 일~목 23시)
+    - cron: '0 23 * * 0-5'
   workflow_dispatch:
 
 jobs:
