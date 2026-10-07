@@ -1,0 +1,5 @@
+# Isolated from the existing morning workflow dependencies.
+pykrx==1.2.9
+exchange-calendars==4.13.2
+requests==2.34.2
+pandas==2.2.3
