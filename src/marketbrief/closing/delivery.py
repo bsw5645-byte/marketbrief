@@ -4,6 +4,26 @@ import os
 import requests
 
 
+def bold_entities(text):
+    """Style plain-text headings using Telegram's UTF-16 entity offsets."""
+    entities = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.rstrip('\r\n')
+        start = 0
+        selected = ''
+        if stripped.startswith(('📊', '📌', '🔥', '🛡', '🔻', '↔', '🔄', '👀')):
+            selected = stripped
+        elif stripped.startswith('• ') and ' | ' in stripped:
+            start = 2
+            selected = stripped[2:].split(' | ', 1)[0]
+        if selected:
+            entities.append({'type': 'bold', 'offset': offset + len(stripped[:start].encode('utf-16-le')) // 2,
+                             'length': len(selected.encode('utf-16-le')) // 2})
+        offset += len(line.encode('utf-16-le')) // 2
+    return entities
+
+
 def chunks(text, limit=3500):
     # Count UTF-16 units to leave room for Telegram's Unicode length handling.
     part = ''
@@ -31,7 +51,7 @@ def deliver(message, receipt, save_receipt, session=None):
                 continue
             try:
                 r = session.post(f'https://api.telegram.org/bot{token}/sendMessage',
-                                 json={'chat_id': chat, 'text': part}, timeout=30)
+                                 json={'chat_id': chat, 'text': part, 'entities': bold_entities(part)}, timeout=30)
                 r.raise_for_status()
                 if not r.json().get('ok'):
                     raise ValueError('API rejected')

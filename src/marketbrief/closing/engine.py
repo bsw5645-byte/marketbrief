@@ -1,6 +1,7 @@
 """Deterministic signals. Turnover is activity, never net investor money flow."""
 from statistics import mean, median
 import math
+from .presentation import render
 
 
 class DataNotReady(ValueError):
@@ -31,6 +32,23 @@ def validate(snapshot):
 
 def bounded(x, low, high):
     return min(high, max(low, x))
+
+
+def theme_status(change, relative, breadth, ratio, score, delta):
+    """Distinguish price direction from trading activity, including selloffs."""
+    if score is None:
+        return '기준 데이터 축적 중'
+    if change <= -2 and relative <= -1 and breadth < .5:
+        return '거래 급증 속 하락' if ratio >= 1.5 else '동반 약세'
+    if change > 0 and score >= 60 and relative >= 1 and breadth >= .6 and ratio >= 1.3 and delta > 0:
+        return '강세'
+    if change > 0 and relative >= .5 and breadth >= .6:
+        return '상승 확산'
+    if change < 0 and relative >= .25:
+        return '하락 속 선방'
+    if change < 0 and breadth < .5:
+        return '약세'
+    return '혼조'
 
 
 def analyze(current, history, config):
@@ -79,27 +97,26 @@ def analyze(current, history, config):
         ratio = turnover / mean(old_values) if ready else None
         delta = share - mean(shares) if ready else None
         # A transparent heuristic, not a calibrated probability or buy signal.
-        score = (40 * bounded(relative / 5, 0, 1) + 25 * breadth
-                 + 20 * bounded((delta or 0) / 1, 0, 1)
-                 + 15 * bounded(((ratio or 1) - 1) / 1, 0, 1)) if ready else None
+        change = median(returns)
+        activity_bonus = (20 * bounded((delta or 0) / 1, 0, 1)
+                          + 15 * bounded(((ratio or 1) - 1) / 1, 0, 1)) if change > 0 else 0
+        score = (40 * bounded(relative / 5, 0, 1) + 25 * breadth + activity_bonus) if ready else None
         leader = max(members, key=lambda s: (s['turnover'], s['code']))
         previous_leader = None
         if old_maps and set(codes).issubset(old_maps[-1]):
             previous_leader = max((old_maps[-1][c] for c in codes), key=lambda s: (s['turnover'], s['code']))['code']
-        if not ready:
-            status = '기준 데이터 축적 중'
-        elif score >= 60 and relative >= 1 and breadth >= .6 and ratio >= 1.3 and delta > 0:
-            status = '강세'
-        elif relative < 0 and delta < 0 and breadth < .5:
-            status = '약화'
-        else:
-            status = '중립'
-        themes.append(dict(name=name, status=status, score=score, change=median(returns),
+        status = theme_status(change, relative, breadth, ratio, score, delta)
+        themes.append(dict(name=name, status=status, score=score, change=change,
                            relative=relative, breadth=breadth, turnover=turnover, share=share,
                            share_delta=delta, ratio=ratio, leader=leader['code'],
                            leader_name=leader['name'], previous_leader=previous_leader,
+                           members=[dict(code=s['code'], name=s['name'], change=s['change']) for s in members],
+                           up_count=sum(r > 0 for r in returns), down_count=sum(r < 0 for r in returns),
+                           member_count=len(members),
                            baseline_days=len(old_values)))
-    themes.sort(key=lambda t: (-(t['score'] if t['score'] is not None else -1), t['name']))
+    order = {'강세': 0, '상승 확산': 1, '하락 속 선방': 2, '혼조': 3, '약세': 4,
+             '동반 약세': 5, '거래 급증 속 하락': 6}
+    themes.sort(key=lambda t: (order.get(t['status'], 7), -t.get('relative', 0), t['name']))
     return {'date': current['date'], 'indices': current['indices'], 'themes': themes,
             'leaders': leaders[:10], 'baseline_days': len(history),
             'stock_count': len(stocks), 'total_turnover': total}
@@ -119,31 +136,3 @@ def compare(report, previous):
     for s in report['leaders']:
         s['new'] = old_codes is not None and s['code'] not in old_codes
     return report
-
-
-def render(report):
-    lines = ['📊 BONG MARKET BRIEF | 장마감', report['date'] + ' KRX 일별 조회 기준',
-             '※ 15:40 수집 목표 · 제공처 지연 시 재시도 · 확정 수급 아님', '',
-             '시장: ' + ' / '.join(f'{k} {v:+.2f}%' for k, v in report['indices'].items()),
-             f"분석 {report['stock_count']:,}종목 · 거래대금 {report['total_turnover']/1e12:.2f}조원", '',
-             '테마 변화 (사용자 지정 바스켓)']
-    for t in report['themes']:
-        if t['score'] is None:
-            lines.append(f"• {t['name']}: {t['status']}")
-            continue
-        lines.append(f"• {t['name']} [{t['transition'] or t['status']}] {t['score']:.0f}점\n"
-                     f"  중앙등락 {t['change']:+.1f}% / 시장대비 {t['relative']:+.1f}%p / 상승 {t['breadth']:.0%}\n"
-                     f"  거래대금 {t['ratio']:.2f}배 / 점유율 변화 {t['share_delta']:+.2f}%p")
-        if t['previous_leader'] and t['previous_leader'] != t['leader']:
-            lines.append(f"  거래대금 1위 교체: {t['previous_leader']} → {t['leader_name']}")
-    lines.extend(['', '주도주 후보 (거래대금순 · 등락 +2%, 시장대비 +1%p 이상)'])
-    for s in report['leaders']:
-        multiple = f"{s['ratio']:.2f}배" if s['ratio'] is not None else '비교자료 부족'
-        lines.append(f"• {'[신규] ' if s['new'] else ''}{s['name']}({s['code']}) {s['change']:+.2f}%\n"
-                     f"  {s['turnover']/1e8:,.0f}억원 / {multiple} / {s['signal']}")
-    if not report['leaders']:
-        lines.append('• 조건 충족 종목 없음')
-    lines.extend(['', f"기준: 직전 {report['baseline_days']}거래일(최대 20일), 당일 제외.",
-                  '거래대금 점유율은 거래 집중도이며 순유입 자금이 아닙니다.',
-                  '테마 중복 편입 가능 · 자동 매수 신호 아님 · 출처: KRX/pykrx'])
-    return '\n'.join(lines)
