@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import pytest
 from marketbrief.closing.engine import DataNotReady, analyze, compare, render, validate
-from marketbrief.closing.delivery import chunks, deliver
+from marketbrief.closing.delivery import chunks, deliver, bold_entities
 from marketbrief.closing.provider import KRXProvider, is_after_close, session_dates
 from marketbrief.closing.__main__ import main
 
@@ -32,7 +32,7 @@ def test_emergence_and_market_relative_strength():
     assert t['status'] == '강세' and t['transition'] == '신규 강세'
     assert t['relative'] == 5.5 and t['ratio'] == pytest.approx(10 / 3)
     assert all(s['new'] for s in r['leaders'])
-    assert '순유입 자금이 아닙니다' in render(r)
+    assert '거래 증가만으로 자금 유입이나 상승 이유를 단정하지 않습니다' in render(r)
 
 
 def test_future_and_same_day_excluded():
@@ -73,7 +73,7 @@ def test_weakening_and_leader_change():
     current['stocks'][0]['turnover'] = 31e9
     r = compare(analyze(current, old, CONFIG), analyze(old[-1], old[:-1], CONFIG))
     assert r['themes'][0]['transition'] == '강세 이탈'
-    assert r['themes'][0]['status'] == '약화'
+    assert r['themes'][0]['status'] == '동반 약세'
     assert r['themes'][0]['leader'] != r['themes'][0]['previous_leader']
 
 
@@ -186,3 +186,58 @@ def test_end_to_end_fixture(tmp_path, monkeypatch):
     text = (out / 'closing-report.txt').read_text()
     assert '실제 시세 아님' in text and '신규 강세' in text
     assert json.loads((out / 'closing-report.json').read_text())['baseline_days'] == 6
+
+
+def test_high_turnover_selloff_is_not_neutral_or_strength():
+    s = snapshot('2026-09-29', True)
+    for stock in s['stocks'][:3]:
+        stock['change'] = -7.8
+    report = compare(analyze(s, history(), CONFIG), None)
+    theme = report['themes'][0]
+    assert theme['ratio'] > 2 and theme['share_delta'] > 0
+    assert theme['status'] == '거래 급증 속 하락'
+    assert theme['score'] == 0
+    text = render(report)
+    assert '3개 중 3개 하락' in text
+    assert '주가는 하락' in text
+    assert '중립' not in text
+
+
+def test_falling_basket_never_presented_as_rising_in_market_crash():
+    s = snapshot('2026-09-29', True)
+    s['indices']['KOSPI'] = -15
+    for stock in s['stocks'][:3]:
+        stock['change'] = -1
+    report = compare(analyze(s, history(), CONFIG), None)
+    assert report['themes'][0]['status'] == '하락 속 선방'
+    text = render(report)
+    assert '시장보다 덜 하락' in text
+    assert '중심으로 상승 확산' not in text
+
+
+def test_counts_and_actual_stock_returns_replace_opaque_metrics():
+    config = deepcopy(CONFIG)
+    config['themes']['테스트 반도체'] = [f'{i:05}0' for i in range(1, 6)]
+    s = snapshot('2026-09-29')
+    for i, stock in enumerate(s['stocks'][:5]):
+        stock['change'] = 1 if i == 0 else -4
+    report = compare(analyze(s, history(), config), None)
+    text = render(report)
+    assert report['themes'][0]['up_count'] == 1
+    assert '5개 중 4개 하락' in text
+    assert '중앙등락' not in text and '점유율' not in text and '상승 20%' not in text
+    assert '가상종목2 -4.0%' in text
+
+
+def test_no_data_does_not_claim_no_strong_industries():
+    report = compare(analyze(snapshot('2026-09-29'), [], CONFIG), None)
+    text = render(report)
+    assert '데이터가 부족' in text and '확인 보류' in text
+    assert '뚜렷한 동반 상승 없음' not in text
+
+
+def test_telegram_bold_offsets_handle_emoji_and_literal_characters():
+    text = '📊 BONG <오늘>\n일반 텍스트\n🔥 강한 업종\n• A&B | 여러 종목 상승\n'
+    raw = text.encode('utf-16-le')
+    selected = [raw[e['offset']*2:(e['offset']+e['length'])*2].decode('utf-16-le') for e in bold_entities(text)]
+    assert selected == ['📊 BONG <오늘>', '🔥 강한 업종', 'A&B']
