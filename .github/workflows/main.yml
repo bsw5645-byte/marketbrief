@@ -923,193 +923,47 @@ jobs:
 
 
           # ==================================================
-          # 9. Kakao 메시지 분할
+          # 9. KakaoTalk 나에게 보내기
           # ==================================================
 
-          def split_kakao_message(
-              text,
-              limit=170
-          ):
-
-              chunks = []
-              current = ""
-
-
-              for line in (
-                  text.splitlines()
-              ):
-
-                  while (
-                      len(line)
-                      > limit
-                  ):
-
-                      if current:
-
-                          chunks.append(
-                              current
-                          )
-
-                          current = ""
-
-
-                      chunks.append(
-                          line[:limit]
-                      )
-
-                      line = (
-                          line[limit:]
-                      )
-
-
-                  candidate = (
-
-                      line
-
-                      if not current
-
-                      else (
-                          current
-                          + "\n"
-                          + line
-                      )
-                  )
-
-
-                  if (
-                      len(candidate)
-                      <= limit
-                  ):
-
-                      current = (
-                          candidate
-                      )
-
-                  else:
-
-                      if current:
-
-                          chunks.append(
-                              current
-                          )
-
-
-                      current = line
-
-
-              if current:
-
-                  chunks.append(
-                      current
-                  )
-
-
-              return chunks
-
-
-          # 카카오톡용 메시지: 기사 URL 제거 + 기사 제목만 남김
-          kakao_lines = []
-
-          for line in message.splitlines():
-              stripped = line.strip()
-
-              # 기사 URL 줄 제거
-              if stripped.startswith("↳"):
-                  continue
-
-              # 뉴스 기사에서 언론사 표기 제거 → 제목만 유지
-              if stripped.startswith("• ") and " — " in stripped:
-                  stripped = stripped.split(" — ", 1)[0]
-
-              kakao_lines.append(stripped)
-
-          kakao_message = "\n".join(kakao_lines)
-          kakao_message += (
-              "\n\n🔗 기사 원문은 텔레그램에서 확인"
+          # 카카오톡에는 간단한 안내 2줄만 전송
+          kakao_message = (
+              "아침 브리핑 입니다\n"
+              "https://t.me/Bong_moring_Brief_bot"
           )
 
-          kakao_chunks = (
-              split_kakao_message(
-                  kakao_message
-              )
+          template = {
+              "object_type": "text",
+              "text": kakao_message,
+              "link": {
+                  "web_url":
+                      "https://t.me/Bong_moring_Brief_bot",
+                  "mobile_web_url":
+                      "https://t.me/Bong_moring_Brief_bot",
+              },
+          }
+
+          kakao_response = requests.post(
+              (
+                  "https://kapi.kakao.com/"
+                  "v2/api/talk/memo/"
+                  "default/send"
+              ),
+              headers={
+                  "Authorization":
+                      "Bearer " + kakao_access_token
+              },
+              data={
+                  "template_object":
+                      json.dumps(
+                          template,
+                          ensure_ascii=False
+                      )
+              },
+              timeout=30,
           )
 
-          # ==================================================
-          # 10. KakaoTalk 나에게 보내기
-          # ==================================================
-
-          total_chunks = len(
-              kakao_chunks
-          )
-
-
-          for (
-              index,
-              chunk
-          ) in enumerate(
-              kakao_chunks,
-              start=1
-          ):
-
-              if total_chunks > 1:
-
-                  chunk = (
-                      f"[{index}/"
-                      f"{total_chunks}]\n"
-                      + chunk
-                  )
-
-
-              template = {
-
-                  "object_type":
-                      "text",
-
-                  "text":
-                      chunk,
-
-                  "link": {
-                      "web_url":
-                          "https://t.me/Bong_moring_Brief_bot",
-
-                      "mobile_web_url":
-                          "https://t.me/Bong_moring_Brief_bot",
-                  },
-
-                  "button_title":
-                      "텔레그램에서 기사 링크 보기",
-              }
-
-
-              kakao_response = requests.post(
-
-                  (
-                      "https://kapi.kakao.com/"
-                      "v2/api/talk/memo/"
-                      "default/send"
-                  ),
-
-                  headers={
-                      "Authorization":
-                          (
-                              "Bearer "
-                              + kakao_access_token
-                          )
-                  },
-
-                  data={
-                      "template_object":
-                          json.dumps(
-                              template,
-                              ensure_ascii=False
-                          )
-                  },
-
-                  timeout=30,
-              )
-
-
-              kakao_response.raise_for_status()
+          kakao_response.raise_for_status()
 
 
           print(
