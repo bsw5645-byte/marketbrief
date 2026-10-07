@@ -2,13 +2,16 @@ name: BONG Morning Brief
 
 on:
   schedule:
-    # 한국시간 월~토 오전 8시 (UTC 일~목 23시)
+    # 한국시간 월~토 오전 8시
+    # UTC 기준 일~금 23시
     - cron: '0 23 * * 0-5'
+
   workflow_dispatch:
 
 jobs:
   morning-brief:
     runs-on: ubuntu-latest
+
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -22,12 +25,17 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
           KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+
         run: |
           cat << 'PY' > /tmp/brief.py
+
           import os
+          import json
+
           from datetime import datetime
           from urllib.parse import quote
           from zoneinfo import ZoneInfo
@@ -36,11 +44,21 @@ jobs:
           import requests
           import yfinance as yf
 
+
+          # ==================================================
+          # 기본 설정
+          # ==================================================
+
           KST = ZoneInfo("Asia/Seoul")
+
           now = datetime.now(KST)
           today = now.date()
 
-          # 1. 밤사이 시장: 개별 NVIDIA/Micron 주가는 제외
+
+          # ==================================================
+          # 1. 밤사이 시장
+          # ==================================================
+
           assets = {
               "NASDAQ": "^IXIC",
               "S&P 500": "^GSPC",
@@ -49,153 +67,743 @@ jobs:
               "JPY/KRW": "JPYKRW=X",
           }
 
+
           def get_change(ticker):
-              closes = yf.Ticker(ticker).history(period="5d")["Close"].dropna()
+
+              df = yf.Ticker(ticker).history(
+                  period="5d"
+              )
+
+              closes = df["Close"].dropna()
+
               if len(closes) < 2:
                   return None, None
-              previous, current = float(closes.iloc[-2]), float(closes.iloc[-1])
-              return current, (current / previous - 1) * 100
+
+              previous = float(
+                  closes.iloc[-2]
+              )
+
+              current = float(
+                  closes.iloc[-1]
+              )
+
+              change = (
+                  current / previous - 1
+              ) * 100
+
+              return current, change
+
 
           market = {}
+
+
           for name, ticker in assets.items():
+
               try:
-                  market[name] = get_change(ticker)
+                  market[name] = get_change(
+                      ticker
+                  )
+
               except Exception:
-                  market[name] = (None, None)
+                  market[name] = (
+                      None,
+                      None
+                  )
+
 
           def market_line(name):
+
               value, change = market[name]
+
               if value is None:
-                  return f"• {name}: 확인 실패"
-              arrow = "▲" if change >= 0 else "▼"
-              if name in {"USD/KRW", "JPY/KRW"}:
-                  return f"• {name}: {value:,.2f}원 {arrow}{abs(change):.2f}%"
-              return f"• {name}: {change:+.2f}%"
+
+                  return (
+                      f"• {name}: 확인 실패"
+                  )
+
+
+              arrow = (
+                  "▲"
+                  if change >= 0
+                  else "▼"
+              )
+
+
+              if name in {
+                  "USD/KRW",
+                  "JPY/KRW"
+              }:
+
+                  return (
+                      f"• {name}: "
+                      f"{value:,.2f}원 "
+                      f"{arrow}{abs(change):.2f}%"
+                  )
+
+
+              return (
+                  f"• {name}: "
+                  f"{change:+.2f}%"
+              )
+
 
           def one_line_summary():
-              nasdaq = market["NASDAQ"][1]
-              sox = market["필라델피아 반도체"][1]
-              if nasdaq is None or sox is None:
-                  return "전일 대비: 주요 시장 데이터를 모두 확인하지 못했습니다."
-              tone = "위험선호" if nasdaq >= 0 and sox >= 0 else "경계"
-              leader = "반도체" if abs(sox) >= abs(nasdaq) else "나스닥"
-              return f"전일 대비: {leader} 중심 {tone} 흐름 (나스닥 {nasdaq:+.2f}%, SOX {sox:+.2f}%)."
 
-          # 2. 뉴스: 분야별 복수 쿼리, 중복/저품질 제목을 제외하고 최신 기사 선택
+              nasdaq = market[
+                  "NASDAQ"
+              ][1]
+
+              sox = market[
+                  "필라델피아 반도체"
+              ][1]
+
+
+              if (
+                  nasdaq is None
+                  or sox is None
+              ):
+
+                  return (
+                      "전일 대비: "
+                      "주요 시장 데이터를 "
+                      "모두 확인하지 못했습니다."
+                  )
+
+
+              tone = (
+                  "위험선호"
+                  if nasdaq >= 0
+                  and sox >= 0
+                  else "경계"
+              )
+
+
+              leader = (
+                  "반도체"
+                  if abs(sox)
+                  >= abs(nasdaq)
+                  else "나스닥"
+              )
+
+
+              return (
+                  f"전일 대비: "
+                  f"{leader} 중심 "
+                  f"{tone} 흐름 "
+                  f"(나스닥 {nasdaq:+.2f}%, "
+                  f"SOX {sox:+.2f}%)."
+              )
+
+
+          # ==================================================
+          # 2. 관심 뉴스
+          # ==================================================
+
           categories = [
-              ("🟢 AI 반도체", ["NVIDIA AI 반도체 when:2d", "엔비디아 HBM 데이터센터 when:2d"]),
-              ("🟣 메모리", ["Micron HBM 메모리 반도체 when:2d", "삼성전자 SK하이닉스 HBM when:2d"]),
-              ("🇺🇸 미국 증시", ["미국 증시 나스닥 S&P500 반도체 when:1d"]),
-              ("🤖 빅테크", ["AI 빅테크 구글 마이크로소프트 메타 아마존 when:2d"]),
-              ("🇰🇷 한국 증시", ["코스피 삼성전자 SK하이닉스 증시 when:1d"]),
+
+              (
+                  "🟢 AI 반도체",
+                  [
+                      "NVIDIA AI 반도체 when:2d",
+                      "엔비디아 HBM 데이터센터 when:2d",
+                  ]
+              ),
+
+              (
+                  "🟣 메모리",
+                  [
+                      "Micron HBM 메모리 반도체 when:2d",
+                      "삼성전자 SK하이닉스 HBM when:2d",
+                  ]
+              ),
+
+              (
+                  "🇺🇸 미국 증시",
+                  [
+                      "미국 증시 나스닥 S&P500 반도체 when:1d",
+                  ]
+              ),
+
+              (
+                  "🤖 빅테크",
+                  [
+                      "AI 빅테크 구글 마이크로소프트 메타 아마존 when:2d",
+                  ]
+              ),
+
+              (
+                  "🇰🇷 한국 증시",
+                  [
+                      "코스피 삼성전자 SK하이닉스 증시 when:1d",
+                  ]
+              ),
           ]
-          blocked = ("youtube", "영상", "포토", "오늘의 운세", "부고")
+
+
+          blocked = (
+              "youtube",
+              "영상",
+              "포토",
+              "오늘의 운세",
+              "부고",
+          )
+
+
           used_titles = set()
 
+
           def news_item(queries):
+
               candidates = []
+
+
               for query in queries:
-                  url = "https://news.google.com/rss/search?" + f"q={quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
+
+                  url = (
+                      "https://news.google.com/"
+                      "rss/search?"
+                      f"q={quote(query)}"
+                      "&hl=ko"
+                      "&gl=KR"
+                      "&ceid=KR:ko"
+                  )
+
+
                   try:
-                      entries = feedparser.parse(url).entries[:15]
+
+                      entries = (
+                          feedparser
+                          .parse(url)
+                          .entries[:15]
+                      )
+
                   except Exception:
+
                       entries = []
+
+
                   for entry in entries:
-                      title = entry.get("title", "").strip()
-                      if not title or title in used_titles or any(word in title.lower() for word in blocked):
+
+                      title = (
+                          entry
+                          .get(
+                              "title",
+                              ""
+                          )
+                          .strip()
+                      )
+
+
+                      if not title:
                           continue
-                      korean = sum('\uac00' <= char <= '\ud7a3' for char in title)
-                      score = korean * 3 + (2 if entry.get("published") else 0)
-                      candidates.append((
-                          score,
-                          title,
-                          entry.get("source", {}).get("title", ""),
-                          entry.get("link", ""),
-                      ))
+
+
+                      if title in used_titles:
+                          continue
+
+
+                      if any(
+                          word
+                          in title.lower()
+                          for word
+                          in blocked
+                      ):
+                          continue
+
+
+                      korean_count = sum(
+                          '\uac00'
+                          <= char
+                          <= '\ud7a3'
+                          for char
+                          in title
+                      )
+
+
+                      score = (
+                          korean_count * 3
+                      )
+
+
+                      if entry.get(
+                          "published"
+                      ):
+                          score += 2
+
+
+                      source = (
+                          entry
+                          .get(
+                              "source",
+                              {}
+                          )
+                          .get(
+                              "title",
+                              ""
+                          )
+                      )
+
+
+                      link = entry.get(
+                          "link",
+                          ""
+                      )
+
+
+                      candidates.append(
+                          (
+                              score,
+                              title,
+                              source,
+                              link,
+                          )
+                      )
+
+
               if not candidates:
                   return None
-              _, title, source, link = max(candidates, key=lambda item: item[0])
-              used_titles.add(title)
-              headline = f"{title}" + (f" — {source}" if source else "")
-              return headline + (f"\n  ↳ {link}" if link else "")
+
+
+              (
+                  _,
+                  title,
+                  source,
+                  link
+              ) = max(
+                  candidates,
+                  key=lambda x: x[0]
+              )
+
+
+              used_titles.add(
+                  title
+              )
+
+
+              headline = title
+
+
+              if source:
+                  headline += (
+                      f" — {source}"
+                  )
+
+
+              if link:
+                  headline += (
+                      f"\n  ↳ {link}"
+                  )
+
+
+              return headline
+
 
           news_lines = []
-          for category, queries in categories:
-              item = news_item(queries)
-              news_lines.append(f"{category}\n• {item or '관련 주요 기사 확인 실패'}")
-          news_text = "\n\n".join(news_lines)
 
-          # 3. 경제/증시 일정: Forex Factory 주간 캘린더에서 미국과 한국을 분리
-          calendar_url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-          keywords = ("PMI", "ISM", "CPI", "PPI", "PCE", "GDP", "FOMC", "Powell", "Employment",
-                      "Unemployment", "Non-Farm", "Jobless", "Claims", "JOLTS", "ADP", "Retail Sales",
-                      "Durable Goods", "Consumer Confidence", "Consumer Sentiment", "UoM", "New Home Sales",
-                      "Interest Rate", "Trade Balance")
-          events = {"USD": [], "KRW": []}
+
+          for (
+              category,
+              queries
+          ) in categories:
+
+              item = news_item(
+                  queries
+              )
+
+
+              news_lines.append(
+                  f"{category}\n"
+                  f"• "
+                  f"{item or '관련 주요 기사 확인 실패'}"
+              )
+
+
+          news_text = "\n\n".join(
+              news_lines
+          )
+
+
+          # ==================================================
+          # 3. 미국 / 한국 주요 경제 일정
+          # ==================================================
+
+          calendar_url = (
+              "https://nfs.faireconomy.media/"
+              "ff_calendar_thisweek.json"
+          )
+
+
+          keywords = (
+
+              "PMI",
+              "ISM",
+              "CPI",
+              "PPI",
+              "PCE",
+              "GDP",
+              "FOMC",
+              "Powell",
+              "Employment",
+              "Unemployment",
+              "Non-Farm",
+              "Jobless",
+              "Claims",
+              "JOLTS",
+              "ADP",
+              "Retail Sales",
+              "Durable Goods",
+              "Consumer Confidence",
+              "Consumer Sentiment",
+              "UoM",
+              "New Home Sales",
+              "Interest Rate",
+              "Trade Balance",
+          )
+
+
+          events = {
+              "USD": [],
+              "KRW": [],
+          }
+
+
           try:
-              raw_events = requests.get(calendar_url, timeout=20).json()
+
+              response = requests.get(
+                  calendar_url,
+                  timeout=20
+              )
+
+              response.raise_for_status()
+
+              raw_events = (
+                  response.json()
+              )
+
+
               for event in raw_events:
-                  country = event.get("country")
-                  title = event.get("title", "")
+
+                  country = event.get(
+                      "country"
+                  )
+
+                  title = event.get(
+                      "title",
+                      ""
+                  )
+
+
                   if country not in events:
                       continue
-                  if event.get("impact") not in {"High", "Medium"} and not any(k.lower() in title.lower() for k in keywords):
+
+
+                  impact = event.get(
+                      "impact"
+                  )
+
+
+                  important = any(
+                      keyword.lower()
+                      in title.lower()
+                      for keyword
+                      in keywords
+                  )
+
+
+                  if (
+                      impact not in {
+                          "High",
+                          "Medium"
+                      }
+                      and not important
+                  ):
                       continue
+
+
                   try:
-                      dt = datetime.fromisoformat(event["date"]).astimezone(KST)
+
+                      dt = (
+                          datetime
+                          .fromisoformat(
+                              event["date"]
+                          )
+                          .astimezone(KST)
+                      )
+
                   except Exception:
+
                       continue
-                  if dt.date() >= today:
-                      events[country].append({"dt": dt, "title": title, "forecast": event.get("forecast", ""), "previous": event.get("previous", "")})
+
+
+                  if dt.date() < today:
+                      continue
+
+
+                  events[
+                      country
+                  ].append(
+                      {
+                          "dt": dt,
+                          "title": title,
+                          "forecast":
+                              event.get(
+                                  "forecast",
+                                  ""
+                              ),
+                          "previous":
+                              event.get(
+                                  "previous",
+                                  ""
+                              ),
+                      }
+                  )
+
+
           except Exception:
               pass
+
+
           for country in events:
-              events[country].sort(key=lambda event: event["dt"])
 
-          def schedule_text(country, empty):
-              relevant = events[country]
+              events[country].sort(
+                  key=lambda event:
+                      event["dt"]
+              )
+
+
+          def schedule_text(
+              country,
+              empty_message
+          ):
+
+              relevant = (
+                  events[country]
+              )
+
+
               if not relevant:
-                  return f"• {empty}"
+
+                  return (
+                      f"• {empty_message}"
+                  )
+
+
               lines = []
+
+
               for event in relevant[:5]:
-                  day = "오늘" if event["dt"].date() == today else f"{event['dt'].month}/{event['dt'].day}"
+
+                  if (
+                      event["dt"].date()
+                      == today
+                  ):
+
+                      day = "오늘"
+
+                  else:
+
+                      day = (
+                          f"{event['dt'].month}/"
+                          f"{event['dt'].day}"
+                      )
+
+
                   details = []
+
+
                   if event["forecast"]:
-                      details.append(f"예상 {event['forecast']}")
+
+                      details.append(
+                          f"예상 "
+                          f"{event['forecast']}"
+                      )
+
+
                   if event["previous"]:
-                      details.append(f"이전 {event['previous']}")
-                  suffix = f" ({' / '.join(details)})" if details else ""
-                  lines.append(f"• {day} {event['dt'].strftime('%H:%M')} | {event['title']}{suffix}")
-              return "\n".join(lines)
 
-          # 4. 빅테크 10개: 앞으로 7일 이내 실적을 매일 D-day로 표기
+                      details.append(
+                          f"이전 "
+                          f"{event['previous']}"
+                      )
+
+
+                  suffix = ""
+
+
+                  if details:
+
+                      suffix = (
+                          " ("
+                          + " / ".join(
+                              details
+                          )
+                          + ")"
+                      )
+
+
+                  lines.append(
+                      f"• {day} "
+                      f"{event['dt'].strftime('%H:%M')} "
+                      f"| {event['title']}"
+                      f"{suffix}"
+                  )
+
+
+              return "\n".join(
+                  lines
+              )
+
+
+          # ==================================================
+          # 4. 빅테크 10개 실적 D-day
+          # ==================================================
+
           earnings_watch = {
-              "Apple": "AAPL", "Microsoft": "MSFT", "Alphabet": "GOOGL", "Amazon": "AMZN",
-              "Meta": "META", "NVIDIA": "NVDA", "Tesla": "TSLA", "Broadcom": "AVGO",
-              "TSMC": "TSM", "Micron": "MU",
-          }
-          earnings = []
-          for company, symbol in earnings_watch.items():
-              try:
-                  dates = yf.Ticker(symbol).get_earnings_dates(limit=12)
-                  if dates is None or dates.empty:
-                      continue
-                  for timestamp in dates.index:
-                      if timestamp.tzinfo is None:
-                          date = timestamp.date()
-                      else:
-                          date = timestamp.tz_convert(KST).date()
-                      days = (date - today).days
-                      if 0 <= days <= 7:
-                          earnings.append((date, f"• D-{days} | {date.month}/{date.day} {company} ({symbol})"))
-                          break
-              except Exception:
-                  continue
-          earnings.sort(key=lambda item: item[0])
-          earnings_text = "\n".join(item[1] for item in earnings) or "• 향후 7일 내 확인된 실적 발표 없음"
 
-          weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
-          date_text = f"{now.year}년 {now.month:02d}월 {now.day:02d}일 {weekdays[now.weekday()]}"
+              "Apple": "AAPL",
+              "Microsoft": "MSFT",
+              "Alphabet": "GOOGL",
+              "Amazon": "AMZN",
+              "Meta": "META",
+
+              "NVIDIA": "NVDA",
+              "Tesla": "TSLA",
+              "Broadcom": "AVGO",
+              "TSMC": "TSM",
+              "Micron": "MU",
+          }
+
+
+          earnings = []
+
+
+          for (
+              company,
+              symbol
+          ) in earnings_watch.items():
+
+              try:
+
+                  dates = (
+                      yf.Ticker(
+                          symbol
+                      )
+                      .get_earnings_dates(
+                          limit=12
+                      )
+                  )
+
+
+                  if (
+                      dates is None
+                      or dates.empty
+                  ):
+                      continue
+
+
+                  for timestamp in (
+                      dates.index
+                  ):
+
+                      if (
+                          timestamp.tzinfo
+                          is None
+                      ):
+
+                          earnings_date = (
+                              timestamp.date()
+                          )
+
+                      else:
+
+                          earnings_date = (
+                              timestamp
+                              .tz_convert(KST)
+                              .date()
+                          )
+
+
+                      days = (
+                          earnings_date
+                          - today
+                      ).days
+
+
+                      if (
+                          0 <= days <= 7
+                      ):
+
+                          earnings.append(
+                              (
+                                  earnings_date,
+                                  (
+                                      f"• D-{days} | "
+                                      f"{earnings_date.month}/"
+                                      f"{earnings_date.day} "
+                                      f"{company} "
+                                      f"({symbol})"
+                                  )
+                              )
+                          )
+
+                          break
+
+
+              except Exception:
+
+                  continue
+
+
+          earnings.sort(
+              key=lambda item:
+                  item[0]
+          )
+
+
+          if earnings:
+
+              earnings_text = (
+                  "\n".join(
+                      item[1]
+                      for item
+                      in earnings
+                  )
+              )
+
+          else:
+
+              earnings_text = (
+                  "• 향후 7일 내 "
+                  "확인된 실적 발표 없음"
+              )
+
+
+          # ==================================================
+          # 5. 날짜
+          # ==================================================
+
+          weekdays = [
+              "월요일",
+              "화요일",
+              "수요일",
+              "목요일",
+              "금요일",
+              "토요일",
+              "일요일",
+          ]
+
+
+          date_text = (
+              f"{now.year}년 "
+              f"{now.month:02d}월 "
+              f"{now.day:02d}일 "
+              f"{weekdays[now.weekday()]}"
+          )
+
+
+          # ==================================================
+          # 6. 브리핑 메시지 작성
+          # ==================================================
 
           message = f"""☀️ BONG MORNING BRIEF
           {date_text}
@@ -219,186 +827,277 @@ jobs:
           {news_text}
 
           🇺🇸 미국 주요 일정
-          {schedule_text("USD", "오늘 이후 주요 미국 경제지표 없음")}
+          {schedule_text(
+              "USD",
+              "오늘 이후 주요 미국 경제지표 없음"
+          )}
 
           🇰🇷 한국 증시/경제 일정
-          {schedule_text("KRW", "오늘 이후 주요 한국 경제·증시 일정 없음")}
+          {schedule_text(
+              "KRW",
+              "오늘 이후 주요 한국 경제·증시 일정 없음"
+          )}
 
           ━━━━━━━━━━━━━
           BONG Morning Brief
           """
-          message = "\n".join(line.strip() for line in message.splitlines())
 
-          response = requests.post(
-              f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
-              data={"chat_id": os.environ["CHAT_ID"], "text": message},
+
+          message = "\n".join(
+              line.strip()
+              for line
+              in message.splitlines()
+          )
+
+
+          # ==================================================
+          # 7. Telegram 전송
+          # ==================================================
+
+          telegram_response = requests.post(
+
+              (
+                  "https://api.telegram.org/"
+                  f"bot{os.environ['BOT_TOKEN']}"
+                  "/sendMessage"
+              ),
+
+              data={
+                  "chat_id":
+                      os.environ[
+                          "CHAT_ID"
+                      ],
+
+                  "text":
+                      message,
+              },
+
               timeout=30,
           )
-          response.raise_for_status()
-          # =====================================
-          # KakaoTalk 나에게 보내기
-          # =====================================
+
+
+          telegram_response.raise_for_status()
+
+
+          # ==================================================
+          # 8. Kakao Access Token 갱신
+          # ==================================================
 
           token_response = requests.post(
+
               "https://kauth.kakao.com/oauth/token",
+
               data={
-                  "grant_type": "refresh_token",
-                  "client_id": os.environ["KAKAO_REST_API_KEY"],
-                  "refresh_token": os.environ["KAKAO_REFRESH_TOKEN"],
-                  "client_secret": os.environ["KAKAO_CLIENT_SECRET"],
+                  "grant_type":
+                      "refresh_token",
+
+                  "client_id":
+                      os.environ[
+                          "KAKAO_REST_API_KEY"
+                      ],
+
+                  "refresh_token":
+                      os.environ[
+                          "KAKAO_REFRESH_TOKEN"
+                      ],
+
+                  "client_secret":
+                      os.environ[
+                          "KAKAO_CLIENT_SECRET"
+                      ],
               },
+
               timeout=30,
           )
 
+
           token_response.raise_for_status()
-          kakao_access_token = token_response.json()["access_token"]
 
 
-          def split_kakao_message(text, limit=180):
+          kakao_access_token = (
+              token_response
+              .json()[
+                  "access_token"
+              ]
+          )
+
+
+          # ==================================================
+          # 9. Kakao 메시지 분할
+          # ==================================================
+
+          def split_kakao_message(
+              text,
+              limit=170
+          ):
+
               chunks = []
               current = ""
 
-              for line in text.splitlines():
 
-                  # 한 줄 자체가 너무 길면 잘라냄
-                  while len(line) > limit:
+              for line in (
+                  text.splitlines()
+              ):
+
+                  while (
+                      len(line)
+                      > limit
+                  ):
+
                       if current:
-                          chunks.append(current)
+
+                          chunks.append(
+                              current
+                          )
+
                           current = ""
 
-                      chunks.append(line[:limit])
-                      line = line[limit:]
+
+                      chunks.append(
+                          line[:limit]
+                      )
+
+                      line = (
+                          line[limit:]
+                      )
+
 
                   candidate = (
+
                       line
+
                       if not current
-                      else current + "\n" + line
+
+                      else (
+                          current
+                          + "\n"
+                          + line
+                      )
                   )
 
-                  if len(candidate) <= limit:
-                      current = candidate
+
+                  if (
+                      len(candidate)
+                      <= limit
+                  ):
+
+                      current = (
+                          candidate
+                      )
+
                   else:
+
                       if current:
-                          chunks.append(current)
+
+                          chunks.append(
+                              current
+                          )
+
+
                       current = line
 
+
               if current:
-                  chunks.append(current)
+
+                  chunks.append(
+                      current
+                  )
+
 
               return chunks
 
 
-          kakao_chunks = split_kakao_message(message)
-
-
-          for index, chunk in enumerate(kakao_chunks, start=1):
-
-              if len(kakao_chunks) > 1:
-                  chunk = (
-                      f"[{index}/{len(kakao_chunks)}]\n"
-                      + chunk
-                  )
-
-              template = {
-                  "object_type": "text",
-                  "text": chunk,
-                  "link": {
-                      "web_url": "https://developers.kakao.com",
-                      "mobile_web_url": "https://developers.kakao.com",
-                  },
-              }
-
-          response.raise_for_status()
-
-          # =====================================
-          # KakaoTalk 나에게 보내기
-          # =====================================
-
-          token_response = requests.post(
-              "https://kauth.kakao.com/oauth/token",
-              data={
-                  "grant_type": "refresh_token",
-                  "client_id": os.environ["KAKAO_REST_API_KEY"],
-                  "refresh_token": os.environ["KAKAO_REFRESH_TOKEN"],
-                  "client_secret": os.environ["KAKAO_CLIENT_SECRET"],
-              },
-              timeout=30,
+          kakao_chunks = (
+              split_kakao_message(
+                  message
+              )
           )
 
-          token_response.raise_for_status()
-          kakao_access_token = token_response.json()["access_token"]
+
+          # ==================================================
+          # 10. KakaoTalk 나에게 보내기
+          # ==================================================
+
+          total_chunks = len(
+              kakao_chunks
+          )
 
 
-          def split_kakao_message(text, limit=180):
-              chunks = []
-              current = ""
+          for (
+              index,
+              chunk
+          ) in enumerate(
+              kakao_chunks,
+              start=1
+          ):
 
-              for line in text.splitlines():
+              if total_chunks > 1:
 
-                  while len(line) > limit:
-                      if current:
-                          chunks.append(current)
-                          current = ""
-
-                      chunks.append(line[:limit])
-                      line = line[limit:]
-
-                  candidate = (
-                      line
-                      if not current
-                      else current + "\n" + line
-                  )
-
-                  if len(candidate) <= limit:
-                      current = candidate
-                  else:
-                      if current:
-                          chunks.append(current)
-                      current = line
-
-              if current:
-                  chunks.append(current)
-
-              return chunks
-
-
-          kakao_chunks = split_kakao_message(message)
-
-
-          for index, chunk in enumerate(kakao_chunks, start=1):
-
-              if len(kakao_chunks) > 1:
                   chunk = (
-                      f"[{index}/{len(kakao_chunks)}]\n"
+                      f"[{index}/"
+                      f"{total_chunks}]\n"
                       + chunk
                   )
 
+
               template = {
-                  "object_type": "text",
-                  "text": chunk,
+
+                  "object_type":
+                      "text",
+
+                  "text":
+                      chunk,
+
                   "link": {
-                      "web_url": "https://developers.kakao.com",
-                      "mobile_web_url": "https://developers.kakao.com",
+
+                      "web_url":
+                          "https://github.com/"
+                          "bsw5645-byte/"
+                          "marketbrief",
+
+                      "mobile_web_url":
+                          "https://github.com/"
+                          "bsw5645-byte/"
+                          "marketbrief",
                   },
               }
+
 
               kakao_response = requests.post(
-                  "https://kapi.kakao.com/v2/api/talk/memo/default/send",
+
+                  (
+                      "https://kapi.kakao.com/"
+                      "v2/api/talk/memo/"
+                      "default/send"
+                  ),
+
                   headers={
                       "Authorization":
-                          f"Bearer {kakao_access_token}"
+                          (
+                              "Bearer "
+                              + kakao_access_token
+                          )
                   },
+
                   data={
                       "template_object":
-                          __import__("json").dumps(
+                          json.dumps(
                               template,
                               ensure_ascii=False
                           )
                   },
+
                   timeout=30,
               )
 
+
               kakao_response.raise_for_status()
+
+
+          print(
+              "Telegram + KakaoTalk "
+              "morning brief sent successfully."
+          )
 
           PY
 
