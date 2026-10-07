@@ -1007,12 +1007,22 @@ jobs:
               return chunks
 
 
-          kakao_chunks = (
-              split_kakao_message(
-                  message
-              )
+         # 카카오톡에서는 기사 URL 제거
+          kakao_message = "\n".join(
+              line
+              for line in message.splitlines()
+              if not line.strip().startswith("↳")
           )
 
+          kakao_message += (
+              "\n\n🔗 기사 원문 링크는 텔레그램에서 확인"
+          )
+
+          kakao_chunks = (
+              split_kakao_message(
+                  kakao_message
+              )
+          )
 
           # ==================================================
           # 10. KakaoTalk 나에게 보내기
@@ -1049,17 +1059,15 @@ jobs:
                       chunk,
 
                   "link": {
-
                       "web_url":
-                          "https://github.com/"
-                          "bsw5645-byte/"
-                          "marketbrief",
+                          "https://t.me/Bong_moring_Brief_bot",
 
                       "mobile_web_url":
-                          "https://github.com/"
-                          "bsw5645-byte/"
-                          "marketbrief",
+                          "https://t.me/Bong_moring_Brief_bot",
                   },
+
+                  "button_title":
+                      "텔레그램에서 기사 링크 보기",
               }
 
 
