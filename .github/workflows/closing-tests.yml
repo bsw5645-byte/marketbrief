@@ -1,0 +1,49 @@
+name: Closing radar tests
+on:
+  pull_request:
+    paths:
+      - 'src/marketbrief/closing/**'
+      - 'tests/test_closing.py'
+      - 'requirements-closing.txt'
+      - 'config/closing.json'
+      - '.github/workflows/closing*.yml'
+      - 'scripts/restore_closing_state.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-closing.txt pytest==9.1.1
+      - run: PYTHONPATH=src python -m pytest tests/test_closing.py -q
+  live-preview:
+    name: KRX real-data preview (no delivery)
+    needs: test
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feat/closing-theme-radar'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-closing.txt
+      - name: Preview with registered KRX account
+        env:
+          PYTHONPATH: src
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+        run: python -m marketbrief.closing
+      - name: Save preview report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bong-krx-live-preview
+          path: reports/closing/
+          if-no-files-found: error
+          retention-days: 7
+
