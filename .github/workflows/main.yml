@@ -22,9 +22,9 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          KAKAO_REST_API_KEY: ${{ 2c51b67c7f50214f27b5b6b8e3c1c0cb }}
-          KAKAO_CLIENT_SECRET: ${{ GqQGfdg5tmzcjmgyZnRWwb8hT5gYA6Rc }}
-          KAKAO_REFRESH_TOKEN: ${{ 5183999 }}
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
         run: |
           cat << 'PY' > /tmp/brief.py
           import os
