@@ -1,0 +1,45 @@
+name: BONG requested preview send
+on:
+  push:
+    branches: ['send/closing-preview-20261007-1758']
+permissions:
+  contents: read
+concurrency:
+  group: bong-requested-preview-20261007-1758
+  cancel-in-progress: false
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-closing.txt
+      - name: Send updated briefing requested by owner
+        env:
+          PYTHONPATH: src
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          if datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat() != "2026-10-07":
+              raise SystemExit("This preview send is only valid on the requested day.")
+          PY
+          python -m marketbrief.closing --send --state data/requested-preview
+      - name: Save requested report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bong-requested-preview-report
+          path: reports/closing/
+          retention-days: 7
+          if-no-files-found: ignore
