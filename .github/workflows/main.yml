@@ -22,6 +22,9 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KAKAO_REST_API_KEY: ${{ 2c51b67c7f50214f27b5b6b8e3c1c0cb }}
+          KAKAO_CLIENT_SECRET: ${{ GqQGfdg5tmzcjmgyZnRWwb8hT5gYA6Rc }}
+          KAKAO_REFRESH_TOKEN: ${{ 5183999 }}
         run: |
           cat << 'PY' > /tmp/brief.py
           import os
@@ -232,7 +235,171 @@ jobs:
               timeout=30,
           )
           response.raise_for_status()
+          # =====================================
+          # KakaoTalk 나에게 보내기
+          # =====================================
+
+          token_response = requests.post(
+              "https://kauth.kakao.com/oauth/token",
+              data={
+                  "grant_type": "refresh_token",
+                  "client_id": os.environ["KAKAO_REST_API_KEY"],
+                  "refresh_token": os.environ["KAKAO_REFRESH_TOKEN"],
+                  "client_secret": os.environ["KAKAO_CLIENT_SECRET"],
+              },
+              timeout=30,
+          )
+
+          token_response.raise_for_status()
+          kakao_access_token = token_response.json()["access_token"]
+
+
+          def split_kakao_message(text, limit=180):
+              chunks = []
+              current = ""
+
+              for line in text.splitlines():
+
+                  # 한 줄 자체가 너무 길면 잘라냄
+                  while len(line) > limit:
+                      if current:
+                          chunks.append(current)
+                          current = ""
+
+                      chunks.append(line[:limit])
+                      line = line[limit:]
+
+                  candidate = (
+                      line
+                      if not current
+                      else current + "\n" + line
+                  )
+
+                  if len(candidate) <= limit:
+                      current = candidate
+                  else:
+                      if current:
+                          chunks.append(current)
+                      current = line
+
+              if current:
+                  chunks.append(current)
+
+              return chunks
+
+
+          kakao_chunks = split_kakao_message(message)
+
+
+          for index, chunk in enumerate(kakao_chunks, start=1):
+
+              if len(kakao_chunks) > 1:
+                  chunk = (
+                      f"[{index}/{len(kakao_chunks)}]\n"
+                      + chunk
+                  )
+
+              template = {
+                  "object_type": "text",
+                  "text": chunk,
+                  "link": {
+                      "web_url": "https://developers.kakao.com",
+                      "mobile_web_url": "https://developers.kakao.com",
+                  },
+              }
+
+          response.raise_for_status()
+
+          # =====================================
+          # KakaoTalk 나에게 보내기
+          # =====================================
+
+          token_response = requests.post(
+              "https://kauth.kakao.com/oauth/token",
+              data={
+                  "grant_type": "refresh_token",
+                  "client_id": os.environ["KAKAO_REST_API_KEY"],
+                  "refresh_token": os.environ["KAKAO_REFRESH_TOKEN"],
+                  "client_secret": os.environ["KAKAO_CLIENT_SECRET"],
+              },
+              timeout=30,
+          )
+
+          token_response.raise_for_status()
+          kakao_access_token = token_response.json()["access_token"]
+
+
+          def split_kakao_message(text, limit=180):
+              chunks = []
+              current = ""
+
+              for line in text.splitlines():
+
+                  while len(line) > limit:
+                      if current:
+                          chunks.append(current)
+                          current = ""
+
+                      chunks.append(line[:limit])
+                      line = line[limit:]
+
+                  candidate = (
+                      line
+                      if not current
+                      else current + "\n" + line
+                  )
+
+                  if len(candidate) <= limit:
+                      current = candidate
+                  else:
+                      if current:
+                          chunks.append(current)
+                      current = line
+
+              if current:
+                  chunks.append(current)
+
+              return chunks
+
+
+          kakao_chunks = split_kakao_message(message)
+
+
+          for index, chunk in enumerate(kakao_chunks, start=1):
+
+              if len(kakao_chunks) > 1:
+                  chunk = (
+                      f"[{index}/{len(kakao_chunks)}]\n"
+                      + chunk
+                  )
+
+              template = {
+                  "object_type": "text",
+                  "text": chunk,
+                  "link": {
+                      "web_url": "https://developers.kakao.com",
+                      "mobile_web_url": "https://developers.kakao.com",
+                  },
+              }
+
+              kakao_response = requests.post(
+                  "https://kapi.kakao.com/v2/api/talk/memo/default/send",
+                  headers={
+                      "Authorization":
+                          f"Bearer {kakao_access_token}"
+                  },
+                  data={
+                      "template_object":
+                          __import__("json").dumps(
+                              template,
+                              ensure_ascii=False
+                          )
+                  },
+                  timeout=30,
+              )
+
+              kakao_response.raise_for_status()
+
           PY
 
           python /tmp/brief.py
-
