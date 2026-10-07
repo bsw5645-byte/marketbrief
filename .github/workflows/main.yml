@@ -1007,15 +1007,25 @@ jobs:
               return chunks
 
 
-         # 카카오톡에서는 기사 URL 제거
-          kakao_message = "\n".join(
-              line
-              for line in message.splitlines()
-              if not line.strip().startswith("↳")
-          )
+          # 카카오톡용 메시지: 기사 URL 제거 + 기사 제목만 남김
+          kakao_lines = []
 
+          for line in message.splitlines():
+              stripped = line.strip()
+
+              # 기사 URL 줄 제거
+              if stripped.startswith("↳"):
+                  continue
+
+              # 뉴스 기사에서 언론사 표기 제거 → 제목만 유지
+              if stripped.startswith("• ") and " — " in stripped:
+                  stripped = stripped.split(" — ", 1)[0]
+
+              kakao_lines.append(stripped)
+
+          kakao_message = "\n".join(kakao_lines)
           kakao_message += (
-              "\n\n🔗 기사 원문 링크는 텔레그램에서 확인"
+              "\n\n🔗 기사 원문은 텔레그램에서 확인"
           )
 
           kakao_chunks = (
