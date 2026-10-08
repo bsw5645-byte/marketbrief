@@ -12,9 +12,10 @@ RESULT = {'accessible': True, 'duration_seconds': 600, 'summary': SUMMARY,
 
 
 def session(result=None, status=200, finish='STOP'):
-    data = {'candidates': [{'finishReason': finish, 'content': {'parts': [
-        {'text': json.dumps(RESULT if result is None else result)}]}}],
-        'usageMetadata': {'promptTokenCount': 10000}}
+    data = {'status': 'completed' if finish == 'STOP' else 'incomplete',
+            'steps': [{'type': 'model_output', 'content': [
+                {'type': 'text', 'text': json.dumps(RESULT if result is None else result)}]}],
+            'usage': {'total_input_tokens': 10000}}
     return SimpleNamespace(post=lambda *a, **k: SimpleNamespace(status_code=status, json=lambda: data))
 
 
@@ -33,10 +34,13 @@ def test_video_input_not_caption_fetch(monkeypatch, tmp_path):
     assert not (tmp_path/'state').exists()
     url, kw = calls[0]
     assert 'fake-key' not in url
-    assert kw['json']['contents'][0]['parts'][0]['fileData']['fileUri'] == VIDEO.url
+    assert url.endswith('/v1beta/interactions')
+    assert kw['json']['input'][0] == {'type': 'video', 'uri': VIDEO.url}
+    assert kw['json']['store'] is False
+    assert kw['json']['response_format'][0]['mime_type'] == 'application/json'
     assert '시각은 추정치' in state['message']
     assert len(calls) == 2
-    assert '검토 대상 초안' in calls[1][1]['json']['contents'][0]['parts'][1]['text']
+    assert '검토 대상 초안' in calls[1][1]['json']['input'][1]['text']
 
 
 @pytest.mark.parametrize('status', [400, 401, 403, 404, 429, 500])
@@ -108,11 +112,30 @@ def test_one_model_fallback_on_503_then_review_same_model(monkeypatch):
     monkeypatch.setenv('GEMINI_API_KEY', 'fake')
     monkeypatch.delenv('GEMINI_MODEL', raising=False)
     responses = iter([session(status=503), session(), session()])
-    urls = []
+    models = []
     def post(url, **kw):
-        urls.append(url)
+        models.append(kw['json']['model'])
         return next(responses).post(url, **kw)
     _, meta = analyze_video(VIDEO, SimpleNamespace(post=post))
-    assert 'gemini-3.8-flash' in urls[0]
-    assert all('gemini-3.7-flash' in u for u in urls[1:])
+    assert models == ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.7-flash']
     assert meta['model'] == 'gemini-3.7-flash'
+
+
+@pytest.mark.parametrize('status', ['in_progress', 'requires_action', 'failed', 'cancelled', 'incomplete'])
+def test_interaction_must_be_completed(monkeypatch, status):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    data = session().post().json()
+    data['status'] = status
+    stub = SimpleNamespace(post=lambda *a, **kw: SimpleNamespace(status_code=200, json=lambda: data))
+    with pytest.raises(PipelineError, match='응답 미완성'):
+        analyze_video(VIDEO, stub)
+
+
+def test_only_one_model_output_is_accepted(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    data = session().post().json()
+    data['steps'].append(deepcopy(data['steps'][0]))
+    stub = SimpleNamespace(post=lambda *a, **kw: SimpleNamespace(status_code=200, json=lambda: data))
+    with pytest.raises(PipelineError, match='응답 미완성'):
+        analyze_video(VIDEO, stub)
+

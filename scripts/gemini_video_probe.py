@@ -4,6 +4,22 @@ from pathlib import Path
 import os
 from marketbrief.video.gemini import analyze_video
 from marketbrief.video.pipeline import KST, PipelineError, Video, find_video, render, save_json
+from marketbrief.video.pipeline import BoundedSession
+
+
+def text_connection_status():
+    """Minimal connection check; never prints input keys or API response bodies."""
+    key = os.environ.get('GEMINI_API_KEY')
+    if not key:
+        return 'missing_key'
+    try:
+        response = BoundedSession().post('https://generativelanguage.googleapis.com/v1beta/interactions',
+            headers={'x-goog-api-key': key}, timeout=(10, 45),
+            json={'model': os.environ.get('GEMINI_MODEL') or 'gemini-3.8-flash', 'store': False,
+                  'input': 'Reply OK.', 'generation_config': {'max_output_tokens': 32}})
+        return response.status_code
+    except Exception:
+        return 'connection_failed'
 
 
 def main():
@@ -33,11 +49,18 @@ def main():
         if discovery_error:
             raise discovery_error
     except PipelineError as error:
+        health = None
+        if str(error).startswith(('Gemini HTTP', 'Gemini 연결 실패')):
+            health = text_connection_status()
+            print('Gemini 텍스트 연결 확인:', health)
         save_json(directory/'status.json', {'status': 'failed', 'reason': str(error),
-                    'gemini_key_present': bool(os.environ.get('GEMINI_API_KEY'))})
+                    'gemini_key_present': bool(os.environ.get('GEMINI_API_KEY')),
+                    'youtube_key_present': bool(os.environ.get('YOUTUBE_API_KEY')),
+                    'gemini_text_http': health})
         print(str(error))
         raise SystemExit(1)
 
 
 if __name__ == '__main__':
     main()
+

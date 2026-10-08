@@ -50,20 +50,20 @@ def _read_video(video, session, prompt, model=None, draft=False):
         raise PipelineError('잘못된 GEMINI_MODEL 설정')
     session = session or BoundedSession()
     payload = {
-        'contents': [{'role': 'user', 'parts': [
-            {'fileData': {'fileUri': video.url}}, {'text': prompt}]}],
-        'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 8000,
-                             'responseMimeType': 'application/json',
-                             'responseJsonSchema': RESPONSE_SCHEMA},
+        'model': model, 'store': False,
+        'input': [{'type': 'video', 'uri': video.url}, {'type': 'text', 'text': prompt}],
+        'generation_config': {'max_output_tokens': 8000},
+        'response_format': [{'type': 'text', 'mime_type': 'application/json', 'schema': RESPONSE_SCHEMA}],
     }
     try:
-        r = session.post(f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
+        r = session.post('https://generativelanguage.googleapis.com/v1beta/interactions',
                          headers={'x-goog-api-key': key}, json=payload, timeout=(10, 240))
         # One documented stable alternative for temporary model unavailability.
         # Authentication, quota, validation and transport errors never fall back.
         if r.status_code == 503 and model == MODEL:
             model = FALLBACK_MODEL
-            r = session.post(f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
+            payload['model'] = model
+            r = session.post('https://generativelanguage.googleapis.com/v1beta/interactions',
                              headers={'x-goog-api-key': key}, json=payload, timeout=(10, 240))
     except Exception:
         raise PipelineError('Gemini 연결 실패: 완성된 요약을 받지 못했습니다.') from None
@@ -75,11 +75,11 @@ def _read_video(video, session, prompt, model=None, draft=False):
         raise PipelineError(f"Gemini HTTP {r.status_code}: {reasons.get(r.status_code, '서비스 응답 실패')}")
     try:
         data = r.json()
-        candidates = data.get('candidates', [])
-        if len(candidates) != 1 or candidates[0].get('finishReason') != 'STOP':
+        outputs = [step for step in data.get('steps', []) if step.get('type') == 'model_output']
+        if data.get('status') != 'completed' or len(outputs) != 1:
             raise ValueError('incomplete')
-        parts = candidates[0]['content']['parts']
-        result = json.loads(''.join(p.get('text', '') for p in parts if not p.get('thought')))
+        parts = outputs[0]['content']
+        result = json.loads(''.join(p.get('text', '') for p in parts if p.get('type') == 'text'))
         if not isinstance(result, dict) or set(result) != set(RESPONSE_SCHEMA['required']):
             raise ValueError('schema')
     except Exception:
@@ -113,8 +113,8 @@ def _read_video(video, session, prompt, model=None, draft=False):
             raise PipelineError('영상 검토용 근거 형식 오류')
     if len({p['at'] for p in evidence}) < 2:
         raise PipelineError('서로 다른 영상 구간의 근거 부족')
-    metadata = {'provider': 'gemini', 'model': model, 'duration_seconds': duration,
-                'evidence': evidence, 'usage': data.get('usageMetadata', {})}
+    metadata = {'provider': 'gemini', 'api': 'interactions', 'model': model, 'duration_seconds': duration,
+                'evidence': evidence, 'usage': data.get('usage', {})}
     # Timestamps are model estimates, not verified transcript line starts.
     return summary, metadata
 
@@ -138,3 +138,4 @@ def analyze_video(video, session=None):
     checked['review_changed_summary'] = draft != summary
     checked['draft_usage'] = first['usage']
     return summary, checked
+

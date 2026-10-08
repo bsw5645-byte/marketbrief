@@ -1,7 +1,8 @@
 # 이세무사TV 장마감 영상 요약
 
 기존 KRX/아침 브리핑과 별도로 실행합니다. YouTube 공개 영상 URL을
-Gemini API의 fileData 입력으로 전달하며, GitHub에서 자막을 요청하지 않습니다.
+Gemini Interactions API의 video 입력으로 전달하며, GitHub에서 자막을 요청하지 않습니다.
+store=false로 호출하고 completed 상태의 단일 최종 출력만 사용합니다.
 
 ## 설정
 
@@ -49,3 +50,4 @@ Actions → BONG YouTube Close Summary → Run workflow:
 유닛 테스트와 실제 GitHub Gemini 영상 미리보기 결과를 확인한 뒤 활성화합니다.
 몽클라우드 설치 경로는 사용하지 않습니다. 이전 자막/GPT 코드는 테스트 및
 명시적 --provider captions 용도로만 남아 있으며 기본 실행은 gemini입니다.
+
