@@ -1,0 +1,75 @@
+name: BONG YouTube Close Summary
+
+on:
+  schedule:
+    - cron: '0 9 * * 1-5'     # KST 18:00, weekdays
+  workflow_dispatch:
+    inputs:
+      send:
+        description: 'Telegram 발송 (기본은 발송 없음)'
+        type: boolean
+        default: false
+      target_date:
+        description: '테스트 날짜 YYYY-MM-DD (빈칸: 오늘, 과거 날짜 발송 금지)'
+        type: string
+      video_id:
+        description: '테스트 영상 ID (11자, 빈칸: 자동 선택)'
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bong-youtube-close-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-youtube.txt
+      - run: pip install -r requirements-youtube.txt
+      - name: Restore delivery receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/restore_youtube_state.py
+      - name: Find today video, analyze with Gemini and send
+        env:
+          PYTHONPATH: src
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEND: ${{ github.event_name == 'schedule' || inputs.send == true }}
+          TARGET_DATE: ${{ inputs.target_date }}
+          VIDEO_ID: ${{ inputs.video_id }}
+        run: |
+          args=()
+          if [ "$SEND" = 'true' ]; then args+=(--send); fi
+          if [ -n "$TARGET_DATE" ]; then args+=(--date "$TARGET_DATE"); fi
+          if [ -n "$VIDEO_ID" ]; then args+=(--video-id "$VIDEO_ID"); fi
+          python -m marketbrief.video "${args[@]}"
+      - name: Preserve receipts after partial failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bong-youtube-state
+          path: data/youtube/*.json
+          if-no-files-found: ignore
+          retention-days: 90
+      - name: Save summary and diagnostics, never raw transcript or secrets
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bong-youtube-report
+          path: reports/youtube/
+          if-no-files-found: ignore
+          retention-days: 14

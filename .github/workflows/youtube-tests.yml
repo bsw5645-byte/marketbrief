@@ -1,0 +1,56 @@
+name: YouTube summary tests
+on:
+  pull_request:
+    paths:
+      - 'src/marketbrief/video/**'
+      - 'tests/test_video.py'
+      - 'tests/test_gemini.py'
+      - 'requirements-youtube.txt'
+      - 'scripts/restore_youtube_state.py'
+      - 'scripts/gemini_video_probe.py'
+      - '.github/workflows/youtube*.yml'
+  push:
+    branches: ['feat/youtube-close-summary']
+  workflow_dispatch:
+    inputs:
+      live_probe:
+        description: 'Gemini 실제 영상 호출 테스트 (API 사용량 발생, Telegram 발송 없음)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-youtube.txt pytest==9.1.1
+      - run: PYTHONPATH=src python -m pytest tests/test_video.py tests/test_gemini.py -q
+  gemini-video-probe:
+    # Explicit opt-in only; routine code pushes and PRs do not spend API quota.
+    if: (github.event_name == 'workflow_dispatch' && inputs.live_probe == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[live-probe]'))
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-youtube.txt
+      - name: Analyze Oct 7 video through Gemini, preview only
+        env:
+          PYTHONPATH: src
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
+        run: python scripts/gemini_video_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bong-gemini-probe
+          path: reports/youtube/
+          retention-days: 7
