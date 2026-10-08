@@ -36,7 +36,7 @@ def test_video_input_not_caption_fetch(monkeypatch, tmp_path):
     url, kw = calls[0]
     assert 'fake-key' not in url
     assert url.endswith('/v1beta/interactions')
-    assert kw['json']['input'][0] == {'type': 'video', 'uri': VIDEO.url, 'processing': 'agentic'}
+    assert kw['json']['input'][0] == {'type': 'video', 'uri': VIDEO.url}
     assert kw['json']['background'] is True
     assert kw['json']['store'] is False
     assert kw['json']['response_format'][0]['mime_type'] == 'application/json'

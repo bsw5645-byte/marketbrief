@@ -57,7 +57,7 @@ def _read_video(video, session, prompt, model=None, draft=False):
     session = session or BoundedSession()
     payload = {
         'model': model, 'store': False,
-        'input': [{'type': 'video', 'uri': video.url, 'processing': 'agentic'},
+        'input': [{'type': 'video', 'uri': video.url},
                   {'type': 'text', 'text': prompt}],
         'background': True,
         'generation_config': {'max_output_tokens': 8000, 'thinking_level': 'low'},
