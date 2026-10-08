@@ -23,6 +23,7 @@ def text_connection_status():
 
 
 def main():
+    print('YOUTUBE_API_KEY 전달됨:', bool(os.environ.get('YOUTUBE_API_KEY')), '길이:', len(os.environ.get('YOUTUBE_API_KEY', '')), flush=True)
     directory = Path('reports/youtube')
     # This ID and metadata were independently resolved during the earlier caption test.
     video = Video('YTU7rE9cEnQ', '개인은 3조 샀는데 외국인·기관은 팔았다? 7,000선에 또 막힌 코스피',
