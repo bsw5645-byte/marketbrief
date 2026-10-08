@@ -11,10 +11,6 @@ on:
         description: 'Telegram 발송 (기본은 발송 없음)'
         type: boolean
         default: false
-      fetch_only:
-        description: '자막 수집만 테스트: GPT 비용/발송 없음'
-        type: boolean
-        default: true
       target_date:
         description: '테스트 날짜 YYYY-MM-DD (빈칸: 오늘, 과거 날짜 발송 금지)'
         type: string
@@ -46,21 +42,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/restore_youtube_state.py
-      - name: Discover, fetch complete captions, summarize and send
+      - name: Find today video, analyze with Gemini and send
         env:
           PYTHONPATH: src
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5-mini' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SEND: ${{ github.event_name == 'schedule' || inputs.send == true }}
-          FETCH_ONLY: ${{ github.event_name != 'schedule' && inputs.fetch_only == true }}
           TARGET_DATE: ${{ inputs.target_date }}
           VIDEO_ID: ${{ inputs.video_id }}
         run: |
           args=()
           if [ "$SEND" = 'true' ]; then args+=(--send); fi
-          if [ "$FETCH_ONLY" = 'true' ]; then args+=(--fetch-only); fi
           if [ -n "$TARGET_DATE" ]; then args+=(--date "$TARGET_DATE"); fi
           if [ -n "$VIDEO_ID" ]; then args+=(--video-id "$VIDEO_ID"); fi
           python -m marketbrief.video "${args[@]}"

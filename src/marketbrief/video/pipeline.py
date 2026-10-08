@@ -272,7 +272,7 @@ def deliver_telegram(message, receipt, save, session=None):
 
 def run(day, now, state_dir, report_dir, send=False, video_id=None, fetch_only=False,
         finder=find_video, fetcher=fetch_transcript, summarizer=summarize,
-        sender=deliver_telegram, session_check=None):
+        sender=deliver_telegram, session_check=None, analyzer=None):
     if session_check is None:
         from marketbrief.closing.provider import calendar
         session_check = calendar().is_session
@@ -291,8 +291,14 @@ def run(day, now, state_dir, report_dir, send=False, video_id=None, fetch_only=F
         message = state['message']
     else:
         video = finder(day, now, video_id)
-        rows, metadata = fetcher(video.video_id)
-        print(f"자막 수집 성공: {video.video_id}, {metadata['segments']}구간, {metadata['characters']}자")
+        if analyzer:
+            if fetch_only:
+                raise PipelineError('Gemini 방식은 --fetch-only를 지원하지 않습니다. 영상 분석 미리보기를 사용하세요.')
+            summary, metadata = analyzer(video)
+            print(f"Gemini 영상 분석 응답 수신: {video.video_id}")
+        else:
+            rows, metadata = fetcher(video.video_id)
+            print(f"자막 수집 성공: {video.video_id}, {metadata['segments']}구간, {metadata['characters']}자")
         if fetch_only:
             print('요약용 API 키 설정 여부:', bool(os.environ.get('OPENAI_API_KEY')))
             print('Telegram 설정 여부:', bool(os.environ.get('TELEGRAM_BOT_TOKEN') and
@@ -304,13 +310,18 @@ def run(day, now, state_dir, report_dir, send=False, video_id=None, fetch_only=F
                                                    os.environ.get('TELEGRAM_CHAT_ID'))})
             # The raw transcript stays in memory and is not uploaded/committed.
             return metadata
-        summary = summarizer(video, rows)
+        if not analyzer:
+            summary = summarizer(video, rows)
         message = render(video, summary, day)
+        if analyzer:
+            message = message.replace('자동자막 오인식 가능', 'Gemini 영상 분석 · 시각은 추정치')
         state = {'video': asdict(video), 'summary': summary, 'message': message,
                  'transcript': metadata, 'receipt': {}}
         if send:
             save_json(state_path, state)
     report_dir.mkdir(parents=True, exist_ok=True)
+    save_json(report_dir / 'analysis.json', {'video': asdict(video), 'summary': state['summary'],
+                                            'analysis': state['transcript']})
     (report_dir / f'{day.isoformat()}.txt').write_text(message, encoding='utf-8')
     if send:
         def save_receipt(receipt):

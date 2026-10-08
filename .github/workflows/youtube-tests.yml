@@ -4,6 +4,7 @@ on:
     paths:
       - 'src/marketbrief/video/**'
       - 'tests/test_video.py'
+      - 'tests/test_gemini.py'
       - 'requirements-youtube.txt'
       - 'scripts/restore_youtube_state.py'
       - '.github/workflows/youtube*.yml'
@@ -21,11 +22,11 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements-youtube.txt pytest==9.1.1
-      - run: PYTHONPATH=src python -m pytest tests/test_video.py -q
-  live-caption-probe:
-    # GitHub-hosted caption access was blocked on Oct 8. Do not automatically
-    # repeat that known blocked request on every implementation push.
-    if: github.event_name == 'workflow_dispatch'
+      - run: PYTHONPATH=src python -m pytest tests/test_video.py tests/test_gemini.py -q
+  gemini-video-probe:
+    # One historical preview on this implementation push; no Telegram delivery.
+    if: github.event_name == 'push'
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -34,22 +35,15 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements-youtube.txt
-      - name: Oct 7 actual caption test, no GPT charge or delivery
+      - name: Analyze Oct 7 video through Gemini, preview only
         env:
           PYTHONPATH: src
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m marketbrief.video --date 2026-10-07 --video-id YTU7rE9cEnQ --fetch-only
-      - name: Oct 7 GPT summary preview, no delivery
-        env:
-          PYTHONPATH: src
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5-mini' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
         run: python -m marketbrief.video --date 2026-10-07 --video-id YTU7rE9cEnQ
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: bong-youtube-probe
+          name: bong-gemini-probe
           path: reports/youtube/
           retention-days: 7

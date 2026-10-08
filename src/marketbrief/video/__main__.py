@@ -11,6 +11,7 @@ def main():
     parser.add_argument('--video-id')
     parser.add_argument('--send', action='store_true')
     parser.add_argument('--fetch-only', action='store_true', help='자막 수집만: GPT 비용 및 발송 없음')
+    parser.add_argument('--provider', choices=['gemini', 'captions'], default='gemini')
     args = parser.parse_args()
     if args.video_id and not VIDEO_ID.fullmatch(args.video_id):
         parser.error('영상 ID는 11자의 영문/숫자/-/_만 허용')
@@ -23,7 +24,9 @@ def main():
         parser.error('과거 날짜 테스트는 --send 없이 실행하세요.')
     directory = Path('reports/youtube')
     try:
-        run(day, now, Path('data/youtube'), directory, args.send, args.video_id, args.fetch_only)
+        from .gemini import analyze_video
+        run(day, now, Path('data/youtube'), directory, args.send, args.video_id, args.fetch_only,
+            analyzer=analyze_video if args.provider == 'gemini' else None)
         save_json(directory / 'status.json', {'status': 'ok', 'date': str(day)})
     except PipelineError as error:
         save_json(directory / 'status.json', {'status': 'pending_or_failed', 'date': str(day),

@@ -1,65 +1,43 @@
 # 이세무사TV 장마감 영상 요약
 
-기존 15:40 KRX 브리핑과 별도의 워크플로우입니다. 당일 장마감 이후
-게시된 대상 채널 영상의 한국어 자막 전체를 메모리에서 읽고 GPT가 재서술한
-짧은 요약만 Telegram으로 보냅니다. 원문 자막은 저장소나 Actions artifact에
-올리지 않습니다. 자동자막 오인식과 발언자의 전망은 확정 사실과 다릅니다.
+기존 KRX/아침 브리핑과 별도로 실행합니다. YouTube 공개 영상 URL을
+Gemini API의 fileData 입력으로 전달하며, GitHub에서 자막을 요청하지 않습니다.
 
-## 최초 설정
+## 설정
 
-- 기존 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` Secrets를 재사용합니다.
-- 새 Secret `OPENAI_API_KEY`가 필요합니다. 채팅에 키를 붙이지 마세요.
-  ChatGPT 이용권과 API 과금은 별도입니다. API 계정의 예산도 설정하세요.
-- 모델은 기본 `gpt-5-mini`. Repository variable `OPENAI_MODEL`로 변경 가능.
-  해당 API 계정에서 사용 가능한 Responses 모델이어야 합니다.
-- 채널 ID `UCowHl0BGalL433P6bCBgeKA`: 슈퍼개미 이세무사TV.
+- GitHub Secret GEMINI_API_KEY (Google AI Studio 발급).
+- 기존 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 재사용.
+- GEMINI_MODEL repository variable로 변경 가능. 기본 gemini-3.8-flash.
+- YouTube 영상 입력은 Google의 미리보기 기능이므로 변경/실패 가능.
 
-## 동작 및 테스트
+## 실행
 
-한국시간 평일 15:40, 16:00~20:30 반시간 간격, 21:00에 확인합니다.
-GitHub schedule은 정확한 실행 시각을 보장하지 않습니다.
-XKRX 휴장일/장마감 전에는 실행하지 않으며, 전날 영상을 오늘 영상으로
-사용하지 않습니다. 제목에 시장 관련 문구가 있고 장전/LIVE/강의가 아닌
-당일 15:40 이후 최신 영상만 선택합니다. 채널 제목 형식이 변하면
-`INCLUDE`/`EXCLUDE`를 갱신해야 합니다.
+평일 한국시간 15:40, 16:00부터 20:30까지 30분 간격, 21:00에 확인합니다.
+GitHub 예약 실행은 지연될 수 있습니다. KRX 휴장일과 장마감 전에는 생략합니다.
+대상 채널 UCowHl0BGalL433P6bCBgeKA의 당일 15:40 이후 시장 관련 영상만
+선택하며 전날 영상을 오늘 영상으로 보내지 않습니다.
 
 Actions → BONG YouTube Close Summary → Run workflow:
+- 미리보기: send=false.
+- 당일 발송: send=true.
+- 과거 테스트: target_date=2026-10-07, video_id=YTU7rE9cEnQ, send=false.
 
-1. 먼저 `fetch_only=true`, `send=false`로 자막 수집을 검증합니다.
-2. 요약 미리보기: `fetch_only=false`, `send=false` (API 비용 발생).
-3. 당일 영상 실제 발송: `fetch_only=false`, `send=true`.
+영상 내용을 읽지 못했거나 API 오류/응답 미완성/요약 구조 오류이면 발송하지
+않습니다. 다음 실행에서 재확인합니다. 근거 시각은 Gemini 추정치이며
+실제 자막 행과 대조해 검증된 시각이 아닙니다. 형식 검증은 내용 정확성을
+보장하지 않으므로 초기 실제 영상 검토가 필요합니다.
 
-10월 7일 테스트는 `target_date=2026-10-07`,
-`video_id=YTU7rE9cEnQ`, `send=false`로만 수행합니다.
+영상 발언과 전망만 재서술합니다. 상승 산업이 없으면 빈 항목으로 표시하고,
+거래대금을 순유입으로 표현하지 않습니다. 원문 대본은 저장/재배포하지 않습니다.
+미리보기 artifact에 요약, 영상 정보, 짧게 재서술한 검토용 근거와 토큰 사용량만
+저장합니다. API 오류 본문과 키는 출력하지 않습니다.
 
-영상 미게시/자막 미제공/요약 실패에는 미완성 내용을 발송하지 않고
-실패 상태를 artifact와 Actions에 남깁니다. 다음 scheduled 실행에서 다시
-확인하되 YouTube IP 차단을 프록시/계정 쿠키로 우회하지 않습니다.
-클라우드 자막 수집은 사이트 정책에 따라 차단될 수 있으므로 실제
-GitHub 테스트 성공 전에는 작동한다고 단정하지 마세요.
+완료된 발송과 부분 발송은 artifact receipt에 기록합니다. 재실행은 저장된
+요약을 재사용하고 성공한 부분은 재전송하지 않습니다. 수신 결과가 불명확한
+타임아웃은 자동 재전송하지 않습니다. 상태 복원 실패도 발송을 멈춥니다.
 
-요약을 저장한 후 Telegram 파트별 발송 결과를 저장합니다. 재실행 시
-같은 내용을 재요약하거나 이미 성공한 파트를 재전송하지 않습니다.
-네트워크 타임아웃으로 수신 여부가 불명확한 파트는 `pending`으로 남겨
-자동 재전송을 멈춥니다. Telegram에서 실제 수신 여부를 확인한 뒤 상태를
-수정해야 합니다. 정상 artifact 복원 실패/상태 손상에도 발송을 중단합니다.
+## 검증
 
-## 완료 기준
-
-유닛 테스트 통과, GitHub 실제 자막 수집 성공, OPENAI_API_KEY 설정,
-요약 미리보기 검토, 당일 영상 Telegram API 수신 성공을 각각 확인해야
-완료입니다. 코드 배포만으로 전체 연결 성공을 뜻하지 않습니다.
-
-## 2026-10-08 실제 검증과 Windows 실행기
-
-직접 작업 환경에서는 10월 7일 한국어 자막 220구간/3,979자 수집 성공.
-GitHub-hosted runner에서는 YouTube RequestBlocked가 확인되어 PR은
-미병합 상태입니다. 기존 KRX/아침 workflow는 변경하지 않았습니다.
-known blocked runner에 대해 branch push마다 수집을 반복하지 않습니다.
-
-몽클라우드 Windows PC에서 `windows/START-TEST.cmd`를 실행해 먼저
-그 환경의 자막 수집 가능 여부를 확인합니다. Windows 도구는 공식 서명
-검증 후 폴더 전용 Python 설치를 사용자 선택으로 진행합니다.
-PASS가 나오기 전에는 몽클라우드에서 성공한다고 단정하지 않습니다.
-이 도구에는 API 키, Telegram 키, 예약 작업이 없으며 원문 자막도 저장하지
-않습니다. Windows launcher의 실제 실행은 대상 PC에서 확인해야 합니다.
+유닛 테스트와 실제 GitHub Gemini 영상 미리보기 결과를 확인한 뒤 활성화합니다.
+몽클라우드 설치 경로는 사용하지 않습니다. 이전 자막/GPT 코드는 테스트 및
+명시적 --provider captions 용도로만 남아 있으며 기본 실행은 gemini입니다.
