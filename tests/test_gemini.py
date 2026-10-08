@@ -2,6 +2,7 @@ from copy import deepcopy
 import json
 from types import SimpleNamespace
 import pytest
+import marketbrief.video.gemini as gemini
 from marketbrief.video.gemini import analyze_video
 from marketbrief.video.pipeline import NotReady, PipelineError, run
 from test_video import VIDEO, SUMMARY, DAY, NOW
@@ -39,8 +40,21 @@ def test_video_input_not_caption_fetch(monkeypatch, tmp_path):
     assert kw['json']['store'] is False
     assert kw['json']['response_format'][0]['mime_type'] == 'application/json'
     assert '시각은 추정치' in state['message']
+    assert len(calls) == 1
+
+
+def test_optional_review_makes_second_call(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake-key')
+    monkeypatch.setenv('GEMINI_REVIEW', '1')
+    calls = []
+    stub = session()
+    def post(url, **kw):
+        calls.append(kw)
+        return stub.post(url, **kw)
+    _, meta = analyze_video(VIDEO, SimpleNamespace(post=post))
     assert len(calls) == 2
-    assert '검토 대상 초안' in calls[1][1]['json']['input'][1]['text']
+    assert '검토 대상 초안' in calls[1]['json']['input'][1]['text']
+    assert meta['reviewed'] is True
 
 
 @pytest.mark.parametrize('status', [400, 401, 403, 404, 429, 500])
@@ -82,6 +96,7 @@ def test_integer_valued_json_numbers_normalized(monkeypatch):
 
 def test_review_corrects_draft(monkeypatch):
     monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    monkeypatch.setenv('GEMINI_REVIEW', '1')
     wrong = deepcopy(RESULT)
     wrong['summary']['market'][0]['text'] = '코스피 2,380 마감'
     responses = iter([session(wrong), session(RESULT)])
@@ -92,6 +107,7 @@ def test_review_corrects_draft(monkeypatch):
 
 def test_invalid_draft_timestamp_can_be_corrected_by_review(monkeypatch):
     monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    monkeypatch.setenv('GEMINI_REVIEW', '1')
     wrong = deepcopy(RESULT)
     wrong['summary']['market'][0]['at'] = 709
     responses = iter([session(wrong), session(RESULT)])
@@ -101,6 +117,7 @@ def test_invalid_draft_timestamp_can_be_corrected_by_review(monkeypatch):
 
 def test_review_failure_blocks_delivery(monkeypatch, tmp_path):
     monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    monkeypatch.setenv('GEMINI_REVIEW', '1')
     responses = iter([session(), session(status=429)])
     analyzer = lambda v: analyze_video(v, SimpleNamespace(post=lambda *a, **k: next(responses).post(*a, **k)))
     with pytest.raises(PipelineError, match='HTTP 429'):
@@ -108,16 +125,17 @@ def test_review_failure_blocks_delivery(monkeypatch, tmp_path):
             analyzer=analyzer, send=True, sender=lambda *a: pytest.fail('Telegram'), session_check=lambda *a: True)
 
 
-def test_one_model_fallback_on_503_then_review_same_model(monkeypatch):
+def test_one_model_fallback_on_503(monkeypatch):
     monkeypatch.setenv('GEMINI_API_KEY', 'fake')
     monkeypatch.delenv('GEMINI_MODEL', raising=False)
-    responses = iter([session(status=503), session(), session()])
+    monkeypatch.delenv('GEMINI_REVIEW', raising=False)
+    responses = iter([session(status=503), session()])
     models = []
     def post(url, **kw):
         models.append(kw['json']['model'])
         return next(responses).post(url, **kw)
     _, meta = analyze_video(VIDEO, SimpleNamespace(post=post))
-    assert models == ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.7-flash']
+    assert models == ['gemini-3.8-flash', 'gemini-3.7-flash']
     assert meta['model'] == 'gemini-3.7-flash'
 
 
@@ -135,7 +153,4 @@ def test_only_one_model_output_is_accepted(monkeypatch):
     monkeypatch.setenv('GEMINI_API_KEY', 'fake')
     data = session().post().json()
     data['steps'].append(deepcopy(data['steps'][0]))
-    stub = SimpleNamespace(post=lambda *a, **kw: SimpleNamespace(status_code=200, json=lambda: data))
-    with pytest.raises(PipelineError, match='응답 미완성'):
-        analyze_video(VIDEO, stub)
-
+    stub = SimpleNamespace(post=lambda *a, **kw: SimpleNamespace(status_code=200,
