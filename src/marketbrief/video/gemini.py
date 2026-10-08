@@ -9,6 +9,7 @@ from .pipeline import BoundedSession, NotReady, PipelineError, SCHEMA, validate_
 
 
 MODEL = 'gemini-3.8-flash'
+FALLBACK_MODEL = 'gemini-3.7-flash'
 
 
 def whole_seconds(value):
@@ -40,11 +41,11 @@ RESPONSE_SCHEMA = {'type': 'object', 'properties': {
     'additionalProperties': False}
 
 
-def _read_video(video, session, prompt):
+def _read_video(video, session, prompt, model=None):
     key = os.environ.get('GEMINI_API_KEY')
     if not key:
         raise PipelineError('GitHub Secret GEMINI_API_KEY가 필요합니다.')
-    model = os.environ.get('GEMINI_MODEL') or MODEL
+    model = model or os.environ.get('GEMINI_MODEL') or MODEL
     if not re.fullmatch(r'gemini-[a-zA-Z0-9.-]+', model):
         raise PipelineError('잘못된 GEMINI_MODEL 설정')
     session = session or BoundedSession()
@@ -58,6 +59,12 @@ def _read_video(video, session, prompt):
     try:
         r = session.post(f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
                          headers={'x-goog-api-key': key}, json=payload, timeout=(10, 240))
+        # One documented stable alternative for temporary model unavailability.
+        # Authentication, quota, validation and transport errors never fall back.
+        if r.status_code == 503 and model == MODEL:
+            model = FALLBACK_MODEL
+            r = session.post(f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
+                             headers={'x-goog-api-key': key}, json=payload, timeout=(10, 240))
     except Exception:
         raise PipelineError('Gemini 연결 실패: 완성된 요약을 받지 못했습니다.') from None
     if r.status_code != 200:
@@ -122,7 +129,7 @@ def analyze_video(video, session=None):
 잘못된 내용을 수정하고, 확인할 수 없는 문장은 삭제하세요. 초안을 그대로 승인하지 마세요.
 영상 제목이나 외부 지식을 사용하지 마세요. 최종 summary와 새 evidence를 반환하세요.
 검토 대상 초안(JSON):\n''' + json.dumps(draft, ensure_ascii=False) + '\n' + PROMPT
-    summary, checked = _read_video(video, session, review)
+    summary, checked = _read_video(video, session, review, model=first['model'])
     if abs(first['duration_seconds'] - checked['duration_seconds']) > 5:
         raise PipelineError('영상 분석과 재검토의 길이가 다릅니다. 발송하지 않습니다.')
     checked['reviewed'] = True

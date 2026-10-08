@@ -8,6 +8,7 @@ Gemini API의 fileData 입력으로 전달하며, GitHub에서 자막을 요청�
 - GitHub Secret GEMINI_API_KEY (Google AI Studio 발급).
 - 기존 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 재사용.
 - GEMINI_MODEL repository variable로 변경 가능. 기본 gemini-3.8-flash.
+- 기본 모델의 일시적인 HTTP 503만 gemini-3.7-flash로 한 번 대체합니다.
 - YouTube 영상 입력은 Google의 미리보기 기능이므로 변경/실패 가능.
 
 ## 실행

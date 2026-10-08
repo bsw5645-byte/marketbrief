@@ -12,6 +12,11 @@ on:
   push:
     branches: ['feat/youtube-close-summary']
   workflow_dispatch:
+    inputs:
+      live_probe:
+        description: 'Gemini 실제 영상 호출 테스트 (API 사용량 발생, Telegram 발송 없음)'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -25,8 +30,8 @@ jobs:
       - run: pip install -r requirements-youtube.txt pytest==9.1.1
       - run: PYTHONPATH=src python -m pytest tests/test_video.py tests/test_gemini.py -q
   gemini-video-probe:
-    # One historical preview on this implementation push; no Telegram delivery.
-    if: github.event_name == 'push'
+    # Explicit opt-in only; routine code pushes and PRs do not spend API quota.
+    if: (github.event_name == 'workflow_dispatch' && inputs.live_probe == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[live-probe]'))
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 10

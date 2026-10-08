@@ -93,3 +93,17 @@ def test_review_failure_blocks_delivery(monkeypatch, tmp_path):
     with pytest.raises(PipelineError, match='HTTP 429'):
         run(DAY, NOW, tmp_path/'state', tmp_path/'reports', finder=lambda *a: VIDEO,
             analyzer=analyzer, send=True, sender=lambda *a: pytest.fail('Telegram'), session_check=lambda *a: True)
+
+
+def test_one_model_fallback_on_503_then_review_same_model(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    monkeypatch.delenv('GEMINI_MODEL', raising=False)
+    responses = iter([session(status=503), session(), session()])
+    urls = []
+    def post(url, **kw):
+        urls.append(url)
+        return next(responses).post(url, **kw)
+    _, meta = analyze_video(VIDEO, SimpleNamespace(post=post))
+    assert 'gemini-3.8-flash' in urls[0]
+    assert all('gemini-3.7-flash' in u for u in urls[1:])
+    assert meta['model'] == 'gemini-3.7-flash'
