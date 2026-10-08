@@ -49,3 +49,17 @@ GitHub 테스트 성공 전에는 작동한다고 단정하지 마세요.
 유닛 테스트 통과, GitHub 실제 자막 수집 성공, OPENAI_API_KEY 설정,
 요약 미리보기 검토, 당일 영상 Telegram API 수신 성공을 각각 확인해야
 완료입니다. 코드 배포만으로 전체 연결 성공을 뜻하지 않습니다.
+
+## 2026-10-08 실제 검증과 Windows 실행기
+
+직접 작업 환경에서는 10월 7일 한국어 자막 220구간/3,979자 수집 성공.
+GitHub-hosted runner에서는 YouTube RequestBlocked가 확인되어 PR은
+미병합 상태입니다. 기존 KRX/아침 workflow는 변경하지 않았습니다.
+known blocked runner에 대해 branch push마다 수집을 반복하지 않습니다.
+
+몽클라우드 Windows PC에서 `windows/START-TEST.cmd`를 실행해 먼저
+그 환경의 자막 수집 가능 여부를 확인합니다. Windows 도구는 공식 서명
+검증 후 폴더 전용 Python 설치를 사용자 선택으로 진행합니다.
+PASS가 나오기 전에는 몽클라우드에서 성공한다고 단정하지 않습니다.
+이 도구에는 API 키, Telegram 키, 예약 작업이 없으며 원문 자막도 저장하지
+않습니다. Windows launcher의 실제 실행은 대상 PC에서 확인해야 합니다.
