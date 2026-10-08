@@ -225,3 +225,28 @@ def test_background_interaction_is_polled(monkeypatch):
     assert summary == SUMMARY
     assert calls[0][0].endswith('/interactions/interaction_123')
     assert calls[0][1]['timeout'] == (10, 60)
+
+
+def test_public_url_400_falls_back_to_generate_content(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake-key')
+    legacy = {
+        'candidates': [{'finishReason': 'STOP', 'content': {'parts': [
+            {'text': json.dumps(RESULT)},
+        ]}}],
+        'usageMetadata': {'totalTokenCount': 123},
+    }
+    responses = iter([
+        SimpleNamespace(status_code=400, json=lambda: {}),
+        SimpleNamespace(status_code=200, json=lambda: legacy),
+    ])
+    calls = []
+    def post(url, **kw):
+        calls.append((url, kw))
+        return next(responses)
+    summary, meta = analyze_video(VIDEO, SimpleNamespace(post=post))
+    assert summary == SUMMARY
+    assert calls[0][0].endswith('/v1beta/interactions')
+    assert ':generateContent' in calls[1][0]
+    assert calls[1][1]['json']['contents'][0]['parts'][0]['file_data']['file_uri'] == VIDEO.url
+    assert calls[1][1]['json']['generationConfig']['responseMimeType'] == 'application/json'
+    assert meta['api'] == 'generateContent'

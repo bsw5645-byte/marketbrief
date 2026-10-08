@@ -81,6 +81,29 @@ def _read_video(video, session, prompt, model=None, draft=False):
             model = start_model  # next round starts again from the requested model
     except Exception:
         raise PipelineError('Gemini 연결 실패: 완성된 요약을 받지 못했습니다.') from None
+    api_name = 'interactions'
+    # Background execution is not currently accepted with every public YouTube
+    # URL request. The documented generateContent URL input remains a safe
+    # compatibility path and has the same no-storage behavior.
+    if r.status_code == 400:
+        api_name = 'generateContent'
+        legacy_payload = {
+            'contents': [{'role': 'user', 'parts': [
+                {'file_data': {'file_uri': video.url}},
+                {'text': prompt},
+            ]}],
+            'generationConfig': {
+                'maxOutputTokens': 8000,
+                'responseMimeType': 'application/json',
+                'responseSchema': RESPONSE_SCHEMA,
+            },
+        }
+        legacy_url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
+        try:
+            r = session.post(legacy_url, headers={'x-goog-api-key': key},
+                             json=legacy_payload, timeout=(10, 420))
+        except Exception:
+            raise PipelineError('Gemini 연결 실패: 완성된 요약을 받지 못했습니다.') from None
     if r.status_code != 200:
         # Upstream bodies can repeat credentials or request URLs. Do not log them.
         reasons = {400: '영상 URL 또는 요청 형식 확인 필요', 401: 'API 키 인증 실패',
@@ -89,6 +112,21 @@ def _read_video(video, session, prompt, model=None, draft=False):
         raise PipelineError(f"Gemini HTTP {r.status_code}: {reasons.get(r.status_code, '서비스 응답 실패')}")  # part 2
     try:
         data = r.json()
+        if api_name == 'generateContent':
+            candidates = data.get('candidates', [])
+            if len(candidates) != 1 or candidates[0].get('finishReason') not in {None, 'STOP'}:
+                raise ValueError('incomplete legacy response')
+            legacy_text = ''.join(
+                part.get('text', '') for part in candidates[0].get('content', {}).get('parts', [])
+                if isinstance(part, dict) and not part.get('thought')
+            )
+            data = {
+                'status': 'completed',
+                'steps': [{'type': 'model_output', 'content': [
+                    {'type': 'text', 'text': legacy_text},
+                ]}],
+                'usage': data.get('usageMetadata', {}),
+            }
         # Long video analysis is accepted as a background interaction. Polling
         # avoids holding one HTTP connection open until GitHub terminates it.
         if data.get('status') == 'in_progress':
@@ -167,7 +205,7 @@ def _read_video(video, session, prompt, model=None, draft=False):
             raise PipelineError('영상 검토용 근거 형식 오류')
     if len({p['at'] for p in evidence}) < 2:
         raise PipelineError('서로 다른 영상 구간의 근거 부족')
-    metadata = {'provider': 'gemini', 'api': 'interactions', 'model': model, 'duration_seconds': duration,
+    metadata = {'provider': 'gemini', 'api': api_name, 'model': model, 'duration_seconds': duration,
                 'evidence': evidence, 'usage': data.get('usage', {}),
                 'dropped_out_of_range': dropped}
     # Timestamps are model estimates, not verified transcript line starts.
