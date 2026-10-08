@@ -153,4 +153,56 @@ def test_only_one_model_output_is_accepted(monkeypatch):
     monkeypatch.setenv('GEMINI_API_KEY', 'fake')
     data = session().post().json()
     data['steps'].append(deepcopy(data['steps'][0]))
-    stub = SimpleNamespace(post=lambda *a, **kw: SimpleNamespace(status_code=200,
+    stub = SimpleNamespace(post=lambda *a, **kw: SimpleNamespace(status_code=200, json=lambda: data))
+    with pytest.raises(PipelineError, match='응답 미완성'):
+        analyze_video(VIDEO, stub)
+
+
+def test_503_retried_once_after_wait(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    monkeypatch.delenv('GEMINI_MODEL', raising=False)
+    waits = []
+    monkeypatch.setattr(gemini.time, 'sleep', waits.append)
+    responses = iter([session(status=503), session(status=503), session()])
+    models = []
+    def post(url, **kw):
+        models.append(kw['json']['model'])
+        return next(responses).post(url, **kw)
+    analyze_video(VIDEO, SimpleNamespace(post=post))
+    assert waits == [30]
+    assert models == ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.8-flash']
+
+
+def test_503_gives_up_after_bounded_retries(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    monkeypatch.delenv('GEMINI_MODEL', raising=False)
+    waits, calls = [], []
+    monkeypatch.setattr(gemini.time, 'sleep', waits.append)
+    def post(url, **kw):
+        calls.append(1)
+        return session(status=503).post()
+    with pytest.raises(PipelineError, match='HTTP 503'):
+        analyze_video(VIDEO, SimpleNamespace(post=post))
+    assert waits == [30] and len(calls) == 4
+
+
+def test_429_is_not_retried(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    monkeypatch.setattr(gemini.time, 'sleep', lambda s: pytest.fail('no wait on 429'))
+    calls = []
+    def post(url, **kw):
+        calls.append(1)
+        return session(status=429).post()
+    with pytest.raises(PipelineError, match='HTTP 429'):
+        analyze_video(VIDEO, SimpleNamespace(post=post))
+    assert len(calls) == 1
+
+
+def test_out_of_range_point_dropped_not_whole_summary(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    r = deepcopy(RESULT)
+    r['summary']['market'][0]['at'] = 634
+    r['evidence'].append({'text': '범위 밖 근거', 'at': 900})
+    summary, meta = analyze_video(VIDEO, session(r))
+    assert all(p['at'] != 634 for p in summary['market'])
+    assert meta['dropped_out_of_range'] == 2 and len(meta['evidence']) == 2
