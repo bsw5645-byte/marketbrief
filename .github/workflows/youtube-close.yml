@@ -2,9 +2,7 @@ name: BONG YouTube Close Summary
 
 on:
   schedule:
-    - cron: '40 6 * * 1-5'    # KST 15:40 first check
-    - cron: '0,30 7-11 * * 1-5' # KST 16:00 through 20:30; late uploads/captions
-    - cron: '0 12 * * 1-5'    # KST 21:00 final check
+    - cron: '0 9 * * 1-5'     # KST 18:00, weekdays
   workflow_dispatch:
     inputs:
       send:
@@ -29,7 +27,7 @@ concurrency:
 jobs:
   summarize:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

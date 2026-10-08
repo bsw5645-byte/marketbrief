@@ -13,6 +13,8 @@ MODEL = 'gemini-3.8-flash'
 FALLBACK_MODEL = 'gemini-3.7-flash'
 # 503 (temporarily overloaded) only: wait, then retry. Other errors never retry.
 RETRY_WAITS = (30,)
+POLL_INTERVAL_SECONDS = 10
+POLL_TIMEOUT_SECONDS = 720
 
 
 def whole_seconds(value):
@@ -55,7 +57,9 @@ def _read_video(video, session, prompt, model=None, draft=False):
     session = session or BoundedSession()
     payload = {
         'model': model, 'store': False,
-        'input': [{'type': 'video', 'uri': video.url}, {'type': 'text', 'text': prompt}],
+        'input': [{'type': 'video', 'uri': video.url, 'processing': 'agentic'},
+                  {'type': 'text', 'text': prompt}],
+        'background': True,
         'generation_config': {'max_output_tokens': 8000, 'thinking_level': 'low'},
         'response_format': [{'type': 'text', 'mime_type': 'application/json', 'schema': RESPONSE_SCHEMA}],
     }
@@ -66,12 +70,12 @@ def _read_video(video, session, prompt, model=None, draft=False):
             if wait:
                 time.sleep(wait)
             payload['model'] = model
-            r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 420))
+            r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 60))
             # One documented alternative model for temporary unavailability.
             if r.status_code == 503 and model == MODEL:
                 model = FALLBACK_MODEL
                 payload['model'] = model
-                r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 420))
+                r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 60))
             if r.status_code != 503:
                 break
             model = start_model  # next round starts again from the requested model
@@ -85,6 +89,28 @@ def _read_video(video, session, prompt, model=None, draft=False):
         raise PipelineError(f"Gemini HTTP {r.status_code}: {reasons.get(r.status_code, '서비스 응답 실패')}")  # part 2
     try:
         data = r.json()
+        # Long video analysis is accepted as a background interaction. Polling
+        # avoids holding one HTTP connection open until GitHub terminates it.
+        if data.get('status') == 'in_progress':
+            interaction_id = data.get('id')
+            if (not isinstance(interaction_id, str)
+                    or not re.fullmatch(r'[A-Za-z0-9._:-]{1,256}', interaction_id)):
+                raise ValueError('invalid interaction id')
+            deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
+            while data.get('status') == 'in_progress':
+                if time.monotonic() >= deadline:
+                    raise PipelineError('Gemini 영상 분석 시간 초과: 다음 실행에서 재확인합니다.')
+                time.sleep(POLL_INTERVAL_SECONDS)
+                try:
+                    poll = session.get(f'{url}/{interaction_id}',
+                                       headers={'x-goog-api-key': key}, timeout=(10, 60))
+                except Exception:
+                    raise PipelineError('Gemini 상태 확인 연결 실패: 다음 실행에서 재확인합니다.') from None
+                if poll.status_code in {500, 502, 503, 504}:
+                    continue
+                if poll.status_code != 200:
+                    raise PipelineError(f'Gemini 상태 확인 HTTP {poll.status_code}')
+                data = poll.json()
         outputs = [step for step in data.get('steps', []) if step.get('type') == 'model_output']
         if data.get('status') != 'completed' or len(outputs) != 1:
             raise ValueError('incomplete')
