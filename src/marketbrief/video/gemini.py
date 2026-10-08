@@ -56,7 +56,7 @@ def _read_video(video, session, prompt, model=None, draft=False):
     payload = {
         'model': model, 'store': False,
         'input': [{'type': 'video', 'uri': video.url}, {'type': 'text', 'text': prompt}],
-        'generation_config': {'max_output_tokens': 8000},
+        'generation_config': {'max_output_tokens': 8000, 'thinking_level': 'low'},
         'response_format': [{'type': 'text', 'mime_type': 'application/json', 'schema': RESPONSE_SCHEMA}],
     }
     url = 'https://generativelanguage.googleapis.com/v1beta/interactions'
@@ -66,12 +66,12 @@ def _read_video(video, session, prompt, model=None, draft=False):
             if wait:
                 time.sleep(wait)
             payload['model'] = model
-            r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 240))
+            r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 420))
             # One documented alternative model for temporary unavailability.
             if r.status_code == 503 and model == MODEL:
                 model = FALLBACK_MODEL
                 payload['model'] = model
-                r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 240))
+                r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 420))
             if r.status_code != 503:
                 break
             model = start_model  # next round starts again from the requested model
