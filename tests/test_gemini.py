@@ -35,6 +35,8 @@ def test_video_input_not_caption_fetch(monkeypatch, tmp_path):
     assert 'fake-key' not in url
     assert kw['json']['contents'][0]['parts'][0]['fileData']['fileUri'] == VIDEO.url
     assert '시각은 추정치' in state['message']
+    assert len(calls) == 2
+    assert '검토 대상 초안' in calls[1][1]['json']['contents'][0]['parts'][1]['text']
 
 
 @pytest.mark.parametrize('status', [400, 401, 403, 404, 429, 500])
@@ -72,3 +74,22 @@ def test_integer_valued_json_numbers_normalized(monkeypatch):
     summary, meta = analyze_video(VIDEO, session(r))
     assert type(summary['headline']['at']) is int
     assert type(meta['duration_seconds']) is int
+
+
+def test_review_corrects_draft(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    wrong = deepcopy(RESULT)
+    wrong['summary']['market'][0]['text'] = '코스피 2,380 마감'
+    responses = iter([session(wrong), session(RESULT)])
+    summary, meta = analyze_video(VIDEO, SimpleNamespace(post=lambda *a, **k: next(responses).post(*a, **k)))
+    assert summary == SUMMARY
+    assert meta['reviewed'] and meta['review_changed_summary']
+
+
+def test_review_failure_blocks_delivery(monkeypatch, tmp_path):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    responses = iter([session(), session(status=429)])
+    analyzer = lambda v: analyze_video(v, SimpleNamespace(post=lambda *a, **k: next(responses).post(*a, **k)))
+    with pytest.raises(PipelineError, match='HTTP 429'):
+        run(DAY, NOW, tmp_path/'state', tmp_path/'reports', finder=lambda *a: VIDEO,
+            analyzer=analyzer, send=True, sender=lambda *a: pytest.fail('Telegram'), session_check=lambda *a: True)

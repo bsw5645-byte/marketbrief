@@ -7,6 +7,7 @@ on:
       - 'tests/test_gemini.py'
       - 'requirements-youtube.txt'
       - 'scripts/restore_youtube_state.py'
+      - 'scripts/gemini_video_probe.py'
       - '.github/workflows/youtube*.yml'
   push:
     branches: ['feat/youtube-close-summary']

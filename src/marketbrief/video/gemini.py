@@ -25,6 +25,7 @@ strong/weak는 발언자가 언급한 강세/약세 산업과 종목 각각 최�
 watch는 다음 장 확인할 변수 최대 3개. 없는 항목은 빈 배열입니다.
 쉬운 말로 재서술하고 전망은 전망이라고 명시하세요. 각 text는 한 줄, 160자 이내.
 숫자나 이름이 불명확하면 제외하세요. 거래대금을 순유입으로 단정하지 마세요.
+지수 수치를 과거 시장 지식으로 바꾸지 마세요. 실제 음성과 화면의 수치를 그대로 확인하세요.
 광고/강연 안내와 매수·매도 지시는 제외하세요. 긴 대본이나 직접 인용을 출력하지 마세요.
 summary의 모든 항목은 실제로 들은 발언에 근거해야 합니다.
 evidence는 초반/중반/후반의 서로 다른 내용 최대 3개를 한국어로 짧게 재서술한 검토용 항목입니다.
@@ -39,7 +40,7 @@ RESPONSE_SCHEMA = {'type': 'object', 'properties': {
     'additionalProperties': False}
 
 
-def analyze_video(video, session=None):
+def _read_video(video, session, prompt):
     key = os.environ.get('GEMINI_API_KEY')
     if not key:
         raise PipelineError('GitHub Secret GEMINI_API_KEY가 필요합니다.')
@@ -49,7 +50,7 @@ def analyze_video(video, session=None):
     session = session or BoundedSession()
     payload = {
         'contents': [{'role': 'user', 'parts': [
-            {'fileData': {'fileUri': video.url}}, {'text': PROMPT}]}],
+            {'fileData': {'fileUri': video.url}}, {'text': prompt}]}],
         'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 8000,
                              'responseMimeType': 'application/json',
                              'responseJsonSchema': RESPONSE_SCHEMA},
@@ -109,3 +110,22 @@ def analyze_video(video, session=None):
                 'evidence': evidence, 'usage': data.get('usageMetadata', {})}
     # Timestamps are model estimates, not verified transcript line starts.
     return summary, metadata
+
+
+def analyze_video(video, session=None):
+    session = session or BoundedSession()
+    draft, first = _read_video(video, session, PROMPT)
+    review = '''당신은 영상 요약의 사실 검토자입니다. 첨부한 원본 영상을 다시 확인하세요.
+아래 초안은 틀릴 수 있는 검토 대상이며 사실의 근거가 아닙니다.
+각 지수, 등락률, 수급 금액, 종목명, 날짜/일정, 전망을 실제 음성·화면과 대조하세요.
+특히 코스피 종가처럼 과거 상식과 다른 수치도 원본대로 유지하세요.
+잘못된 내용을 수정하고, 확인할 수 없는 문장은 삭제하세요. 초안을 그대로 승인하지 마세요.
+영상 제목이나 외부 지식을 사용하지 마세요. 최종 summary와 새 evidence를 반환하세요.
+검토 대상 초안(JSON):\n''' + json.dumps(draft, ensure_ascii=False) + '\n' + PROMPT
+    summary, checked = _read_video(video, session, review)
+    if abs(first['duration_seconds'] - checked['duration_seconds']) > 5:
+        raise PipelineError('영상 분석과 재검토의 길이가 다릅니다. 발송하지 않습니다.')
+    checked['reviewed'] = True
+    checked['review_changed_summary'] = draft != summary
+    checked['draft_usage'] = first['usage']
+    return summary, checked

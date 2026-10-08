@@ -1,9 +1,9 @@
 """Historical URL-only preview: never sends or touches live delivery receipts."""
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import os
 from marketbrief.video.gemini import analyze_video
-from marketbrief.video.pipeline import PipelineError, Video, render, save_json
+from marketbrief.video.pipeline import KST, PipelineError, Video, find_video, render, save_json
 
 
 def main():
@@ -22,6 +22,9 @@ def main():
         print(message)
         print('검토용 근거:', metadata['evidence'])
         print('사용량:', metadata['usage'])
+        print('원본 재검토:', metadata['reviewed'], '초안 수정:', metadata['review_changed_summary'])
+        found = find_video(date(2026, 10, 7), datetime.now(KST), video.video_id)
+        print('채널 RSS 검색 성공:', found.video_id, found.title, found.published_at)
     except PipelineError as error:
         save_json(directory/'status.json', {'status': 'failed', 'reason': str(error),
                     'gemini_key_present': bool(os.environ.get('GEMINI_API_KEY'))})
