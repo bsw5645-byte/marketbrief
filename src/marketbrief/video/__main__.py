@@ -31,7 +31,7 @@ def main():
     except PipelineError as error:
         save_json(directory / 'status.json', {'status': 'pending_or_failed', 'date': str(day),
                                              'reason': str(error),
-                                             'openai_key_present': bool(os.environ.get('OPENAI_API_KEY'))})
+                                             'gemini_key_present': bool(os.environ.get('GEMINI_API_KEY'))})
         print(str(error))
         raise SystemExit(1)
 

@@ -40,7 +40,7 @@ jobs:
           PYTHONPATH: src
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
-        run: python -m marketbrief.video --date 2026-10-07 --video-id YTU7rE9cEnQ
+        run: python scripts/gemini_video_probe.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

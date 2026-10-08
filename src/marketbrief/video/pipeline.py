@@ -90,6 +90,9 @@ def find_video(day, now, video_id=None, session=None):
         return parse_feed(r.content, day, now, video_id)
     except PipelineError:
         raise
+    except requests.HTTPError as error:
+        status = error.response.status_code if error.response is not None else 'unknown'
+        raise PipelineError(f'YouTube 채널 목록 HTTP {status}: 다음 실행에서 재확인합니다.') from None
     except Exception:
         raise PipelineError('YouTube 채널 목록 조회 실패: 다음 실행에서 재확인합니다.') from None
 
