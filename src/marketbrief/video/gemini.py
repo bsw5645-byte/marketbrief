@@ -12,7 +12,7 @@ from .pipeline import BoundedSession, NotReady, PipelineError, SCHEMA, validate_
 MODEL = 'gemini-3.8-flash'
 FALLBACK_MODEL = 'gemini-3.7-flash'
 # 503 (temporarily overloaded) only: wait, then retry. Other errors never retry.
-RETRY_WAITS = (20, 40)
+RETRY_WAITS = (30,)
 
 
 def whole_seconds(value):
@@ -82,7 +82,7 @@ def _read_video(video, session, prompt, model=None, draft=False):
         reasons = {400: '영상 URL 또는 요청 형식 확인 필요', 401: 'API 키 인증 실패',
                    403: 'API 키 권한 또는 지역 설정 확인 필요', 404: '모델 사용 가능 여부 확인 필요',
                    429: '호출 한도/무료 할당량 또는 결제 설정 확인 필요'}
-        raise PipelineError(f"Gemini HTTP {r.status_code}: {reasons.get(r.status_code, '서비스 응답 실패')}")
+        raise PipelineError(f"Gemini HTTP {r.status_code}: {reasons.get(r.status_code, '서비스 응답 실패')}")  # part 2
     try:
         data = r.json()
         outputs = [step for step in data.get('steps', []) if step.get('type') == 'model_output']
@@ -150,6 +150,13 @@ def _read_video(video, session, prompt, model=None, draft=False):
 
 def analyze_video(video, session=None):
     session = session or BoundedSession()
+    if os.environ.get('GEMINI_REVIEW') != '1':
+        # Default: one video request per summary. A same-model second pass doubled
+        # free-tier usage without guaranteeing accuracy; enable with GEMINI_REVIEW=1.
+        summary, metadata = _read_video(video, session, PROMPT)
+        metadata['reviewed'] = False
+        metadata['review_changed_summary'] = False
+        return summary, metadata
     draft, first = _read_video(video, session, PROMPT, draft=True)
     review = '''당신은 영상 요약의 사실 검토자입니다. 첨부한 원본 영상을 다시 확인하세요.
 아래 초안은 틀릴 수 있는 검토 대상이며 사실의 근거가 아닙니다.
