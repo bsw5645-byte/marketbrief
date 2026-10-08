@@ -6,6 +6,9 @@ Gemini API의 fileData 입력으로 전달하며, GitHub에서 자막을 요청�
 ## 설정
 
 - GitHub Secret GEMINI_API_KEY (Google AI Studio 발급).
+- RSS 오류 시 YouTube Data API v3로 업로드 목록을 확인합니다. 같은 Google
+  프로젝트에서 이 API가 활성화되어 있어야 합니다. 필요하면 별도 Secret
+  YOUTUBE_API_KEY를 등록하며, 없으면 GEMINI_API_KEY를 사용합니다.
 - 기존 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 재사용.
 - GEMINI_MODEL repository variable로 변경 가능. 기본 gemini-3.8-flash.
 - 기본 모델의 일시적인 HTTP 503만 gemini-3.7-flash로 한 번 대체합니다.

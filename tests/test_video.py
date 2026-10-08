@@ -9,6 +9,7 @@ import pytest
 from marketbrief.video.pipeline import (
     CHANNEL_ID, KST, NotReady, PipelineError, Video, deliver_telegram,
     fetch_transcript, load_json, parse_feed, render, run, summarize, validate_summary,
+    find_video_api,
 )
 
 DAY = date(2026, 10, 7)
@@ -67,6 +68,48 @@ def test_explicit_id_still_date_checked():
     assert parse_feed(feed([entry('사용자 지정 영상')]), DAY, NOW, VIDEO.video_id).video_id == VIDEO.video_id
     with pytest.raises(NotReady):
         parse_feed(feed([entry(when='2026-10-06T10:00:00Z')]), DAY, NOW, VIDEO.video_id)
+
+
+def api_session(items=None, status=200):
+    responses = iter([
+        {'items': [{'id': CHANNEL_ID, 'contentDetails': {'relatedPlaylists': {'uploads': 'uploads-id'}}}]},
+        {'items': items if items is not None else [{'snippet': {'videoOwnerChannelId': CHANNEL_ID, 'title': VIDEO.title},
+                      'contentDetails': {'videoId': VIDEO.video_id, 'videoPublishedAt': VIDEO.published_at}}]},
+    ])
+    calls = []
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        body = next(responses) if status == 200 else {'error': {'errors': [{'reason': 'accessNotConfigured'}], 'message': 'secret'}}
+        return SimpleNamespace(status_code=status, json=lambda: body)
+    return SimpleNamespace(get=get), calls
+
+
+def test_official_api_fallback_uses_header_and_original_publish_time(monkeypatch):
+    monkeypatch.setenv('YOUTUBE_API_KEY', 'secret')
+    stub, calls = api_session()
+    assert find_video_api(DAY, NOW, session=stub) == VIDEO
+    assert len(calls) == 2
+    assert all('secret' not in url and kw['headers']['x-goog-api-key'] == 'secret' for url, kw in calls)
+    assert calls[1][1]['params']['playlistId'] == 'uploads-id'
+
+
+@pytest.mark.parametrize('owner,when,error', [('other', VIDEO.published_at, PipelineError),
+                                           (CHANNEL_ID, '2026-10-06T10:00:00Z', NotReady)])
+def test_api_wrong_channel_or_previous_day_rejected(monkeypatch, owner, when, error):
+    monkeypatch.setenv('YOUTUBE_API_KEY', 'secret')
+    items = [{'snippet': {'videoOwnerChannelId': owner, 'title': VIDEO.title},
+              'contentDetails': {'videoId': VIDEO.video_id, 'videoPublishedAt': when}}]
+    stub, _ = api_session(items)
+    with pytest.raises(error):
+        find_video_api(DAY, NOW, session=stub)
+
+
+def test_api_disabled_error_safe_and_actionable(monkeypatch):
+    monkeypatch.setenv('YOUTUBE_API_KEY', 'secret')
+    stub, _ = api_session(status=403)
+    with pytest.raises(PipelineError, match='YouTube Data API v3 활성화 필요') as error:
+        find_video_api(DAY, NOW, session=stub)
+    assert 'secret' not in str(error.value)
 
 
 def test_complete_transcript_and_language():

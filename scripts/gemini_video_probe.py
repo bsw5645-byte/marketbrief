@@ -12,8 +12,13 @@ def main():
     video = Video('YTU7rE9cEnQ', '개인은 3조 샀는데 외국인·기관은 팔았다? 7,000선에 또 막힌 코스피',
                   '2026-10-07T10:00:00Z')
     try:
-        found = find_video(date(2026, 10, 7), datetime.now(KST), video.video_id)
-        print('채널 RSS 검색 성공:', found.video_id, found.title, found.published_at, flush=True)
+        discovery_error = None
+        try:
+            found = find_video(date(2026, 10, 7), datetime.now(KST), video.video_id)
+            print('채널 검색 성공:', found.video_id, found.title, found.published_at, flush=True)
+        except PipelineError as error:
+            discovery_error = error
+            print('채널 검색 검증 실패:', str(error), flush=True)
         summary, metadata = analyze_video(video)
         message = render(video, summary, date(2026, 10, 7)).replace(
             '자동자막 오인식 가능', 'Gemini 영상 분석 · 시각은 추정치')
@@ -25,6 +30,8 @@ def main():
         print('검토용 근거:', metadata['evidence'])
         print('사용량:', metadata['usage'])
         print('원본 재검토:', metadata['reviewed'], '초안 수정:', metadata['review_changed_summary'])
+        if discovery_error:
+            raise discovery_error
     except PipelineError as error:
         save_json(directory/'status.json', {'status': 'failed', 'reason': str(error),
                     'gemini_key_present': bool(os.environ.get('GEMINI_API_KEY'))})

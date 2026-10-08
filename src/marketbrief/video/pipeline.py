@@ -91,10 +91,68 @@ def find_video(day, now, video_id=None, session=None):
     except PipelineError:
         raise
     except requests.HTTPError as error:
+        if os.environ.get('YOUTUBE_API_KEY') or os.environ.get('GEMINI_API_KEY'):
+            return find_video_api(day, now, video_id, session)
         status = error.response.status_code if error.response is not None else 'unknown'
         raise PipelineError(f'YouTube 채널 목록 HTTP {status}: 다음 실행에서 재확인합니다.') from None
     except Exception:
+        if os.environ.get('YOUTUBE_API_KEY') or os.environ.get('GEMINI_API_KEY'):
+            return find_video_api(day, now, video_id, session)
         raise PipelineError('YouTube 채널 목록 조회 실패: 다음 실행에서 재확인합니다.') from None
+
+
+def find_video_api(day, now, video_id=None, session=None):
+    """Official metadata API fallback; no video/caption scraping or proxy."""
+    key = os.environ.get('YOUTUBE_API_KEY') or os.environ.get('GEMINI_API_KEY')
+    if not key:
+        raise PipelineError('YouTube Data API용 Google API 키가 필요합니다.')
+    session = session or BoundedSession()
+    def get(resource, params):
+        try:
+            response = session.get(f'https://www.googleapis.com/youtube/v3/{resource}',
+                                   params=params, headers={'x-goog-api-key': key})
+        except Exception:
+            raise PipelineError('YouTube Data API 연결 실패') from None
+        if response.status_code != 200:
+            reason = ''
+            try:
+                reasons = [x.get('reason') for x in response.json()['error'].get('errors', [])]
+                if 'accessNotConfigured' in reasons:
+                    reason = ': Google 프로젝트에서 YouTube Data API v3 활성화 필요'
+                elif response.status_code == 403:
+                    reason = ': YouTube Data API v3 활성화 및 키의 API 제한 확인 필요'
+            except Exception:
+                pass
+            raise PipelineError(f'YouTube Data API HTTP {response.status_code}{reason}')
+        try:
+            return response.json()['items']
+        except Exception:
+            raise PipelineError('YouTube Data API 응답 형식 오류') from None
+    channels = get('channels', {'part': 'contentDetails', 'id': CHANNEL_ID})
+    if len(channels) != 1 or channels[0].get('id') != CHANNEL_ID:
+        raise PipelineError('YouTube Data API 채널 ID 불일치')
+    try:
+        uploads = channels[0]['contentDetails']['relatedPlaylists']['uploads']
+    except (KeyError, TypeError):
+        raise PipelineError('채널 업로드 목록 없음') from None
+    items = get('playlistItems', {'part': 'snippet,contentDetails', 'playlistId': uploads, 'maxResults': 50})
+    # Reuse the exact channel/date/time/title selection rules from RSS.
+    import xml.etree.ElementTree as XML
+    root = XML.Element(f"{{{NS['a']}}}feed")
+    XML.SubElement(root, f"{{{NS['yt']}}}channelId").text = CHANNEL_ID
+    for item in items:
+        snippet, content = item.get('snippet', {}), item.get('contentDetails', {})
+        owner = snippet.get('videoOwnerChannelId')
+        if owner != CHANNEL_ID:
+            raise PipelineError('YouTube Data API 영상 채널 ID 불일치')
+        if not content.get('videoPublishedAt'):
+            continue
+        entry = XML.SubElement(root, f"{{{NS['a']}}}entry")
+        for name, value in [('yt:videoId', content.get('videoId', '')), ('yt:channelId', owner),
+                            ('a:title', snippet.get('title', '')), ('a:published', content['videoPublishedAt'])]:
+            prefix, tag = name.split(':')
+            XML.SubElement(entry, f'{{{NS[prefix]}}}{tag}').text = value
+    return parse_feed(XML.tostring(root), day, now, video_id)
 
 
 def fetch_transcript(video_id, api=None):
