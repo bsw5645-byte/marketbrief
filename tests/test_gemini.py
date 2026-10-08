@@ -62,3 +62,13 @@ def test_missing_key_never_calls_api(monkeypatch):
     monkeypatch.delenv('GEMINI_API_KEY', raising=False)
     with pytest.raises(PipelineError, match='GEMINI_API_KEY'):
         analyze_video(VIDEO, SimpleNamespace(post=lambda *a, **k: pytest.fail('network')))
+
+
+def test_integer_valued_json_numbers_normalized(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    r = deepcopy(RESULT)
+    r['duration_seconds'] = 600.0
+    r['summary']['headline']['at'] = 0.0
+    summary, meta = analyze_video(VIDEO, session(r))
+    assert type(summary['headline']['at']) is int
+    assert type(meta['duration_seconds']) is int
