@@ -110,7 +110,7 @@ def find_video_api(day, now, video_id=None, session=None):
     def get(resource, params):
         try:
             response = session.get(f'https://www.googleapis.com/youtube/v3/{resource}',
-                                   params=params, headers={'x-goog-api-key': key})
+                                   params={**params, 'key': key})
         except Exception:
             raise PipelineError('YouTube Data API 연결 실패') from None
         if response.status_code != 200:
@@ -142,11 +142,11 @@ def find_video_api(day, now, video_id=None, session=None):
     XML.SubElement(root, f"{{{NS['yt']}}}channelId").text = CHANNEL_ID
     for item in items:
         snippet, content = item.get('snippet', {}), item.get('contentDetails', {})
+        if not content.get('videoPublishedAt'):
+            continue
         owner = snippet.get('videoOwnerChannelId')
         if owner != CHANNEL_ID:
             raise PipelineError('YouTube Data API 영상 채널 ID 불일치')
-        if not content.get('videoPublishedAt'):
-            continue
         entry = XML.SubElement(root, f"{{{NS['a']}}}entry")
         for name, value in [('yt:videoId', content.get('videoId', '')), ('yt:channelId', owner),
                             ('a:title', snippet.get('title', '')), ('a:published', content['videoPublishedAt'])]:

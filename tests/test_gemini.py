@@ -86,6 +86,15 @@ def test_review_corrects_draft(monkeypatch):
     assert meta['reviewed'] and meta['review_changed_summary']
 
 
+def test_invalid_draft_timestamp_can_be_corrected_by_review(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'fake')
+    wrong = deepcopy(RESULT)
+    wrong['summary']['market'][0]['at'] = 709
+    responses = iter([session(wrong), session(RESULT)])
+    summary, _ = analyze_video(VIDEO, SimpleNamespace(post=lambda *a, **k: next(responses).post(*a, **k)))
+    assert summary == SUMMARY
+
+
 def test_review_failure_blocks_delivery(monkeypatch, tmp_path):
     monkeypatch.setenv('GEMINI_API_KEY', 'fake')
     responses = iter([session(), session(status=429)])

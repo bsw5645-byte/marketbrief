@@ -84,12 +84,12 @@ def api_session(items=None, status=200):
     return SimpleNamespace(get=get), calls
 
 
-def test_official_api_fallback_uses_header_and_original_publish_time(monkeypatch):
+def test_official_api_fallback_uses_key_and_original_publish_time(monkeypatch):
     monkeypatch.setenv('YOUTUBE_API_KEY', 'secret')
     stub, calls = api_session()
     assert find_video_api(DAY, NOW, session=stub) == VIDEO
     assert len(calls) == 2
-    assert all('secret' not in url and kw['headers']['x-goog-api-key'] == 'secret' for url, kw in calls)
+    assert all('secret' not in url and kw['params']['key'] == 'secret' for url, kw in calls)
     assert calls[1][1]['params']['playlistId'] == 'uploads-id'
 
 

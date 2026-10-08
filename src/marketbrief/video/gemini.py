@@ -41,7 +41,7 @@ RESPONSE_SCHEMA = {'type': 'object', 'properties': {
     'additionalProperties': False}
 
 
-def _read_video(video, session, prompt, model=None):
+def _read_video(video, session, prompt, model=None, draft=False):
     key = os.environ.get('GEMINI_API_KEY')
     if not key:
         raise PipelineError('GitHub Secret GEMINI_API_KEY가 필요합니다.')
@@ -105,7 +105,7 @@ def _read_video(video, session, prompt, model=None):
         if not isinstance(p, dict):
             raise PipelineError('영상 근거 시각 형식 오류')
         p['at'] = whole_seconds(p.get('at'))
-        if not 0 <= p['at'] < duration:
+        if not draft and not 0 <= p['at'] < duration:
             raise PipelineError(f"영상 근거 시각 범위 오류: {p['at']}초 / 영상 길이 {duration}초")
     validate_summary(summary, [{'start': p['at']} for p in all_points])
     for p in evidence:
@@ -121,12 +121,14 @@ def _read_video(video, session, prompt, model=None):
 
 def analyze_video(video, session=None):
     session = session or BoundedSession()
-    draft, first = _read_video(video, session, PROMPT)
+    draft, first = _read_video(video, session, PROMPT, draft=True)
     review = '''당신은 영상 요약의 사실 검토자입니다. 첨부한 원본 영상을 다시 확인하세요.
 아래 초안은 틀릴 수 있는 검토 대상이며 사실의 근거가 아닙니다.
 각 지수, 등락률, 수급 금액, 종목명, 날짜/일정, 전망을 실제 음성·화면과 대조하세요.
 특히 코스피 종가처럼 과거 상식과 다른 수치도 원본대로 유지하세요.
 잘못된 내용을 수정하고, 확인할 수 없는 문장은 삭제하세요. 초안을 그대로 승인하지 마세요.
+모든 at은 분:초 또는 MMSS가 아닌 정수 초입니다. 7:09는 709가 아니라 429초입니다.
+모든 시각은 영상 길이보다 작아야 합니다. 초안의 잘못된 시각도 원본에서 다시 확인하세요.
 영상 제목이나 외부 지식을 사용하지 마세요. 최종 summary와 새 evidence를 반환하세요.
 검토 대상 초안(JSON):\n''' + json.dumps(draft, ensure_ascii=False) + '\n' + PROMPT
     summary, checked = _read_video(video, session, review, model=first['model'])
