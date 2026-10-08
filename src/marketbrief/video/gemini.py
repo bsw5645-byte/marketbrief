@@ -89,13 +89,13 @@ def _read_video(video, session, prompt, model=None, draft=False):
         api_name = 'generateContent'
         legacy_payload = {
             'contents': [{'role': 'user', 'parts': [
-                {'file_data': {'file_uri': video.url}},
+                {'fileData': {'fileUri': video.url}},
                 {'text': prompt},
             ]}],
             'generationConfig': {
                 'maxOutputTokens': 8000,
                 'responseMimeType': 'application/json',
-                'responseSchema': RESPONSE_SCHEMA,
+                'responseJsonSchema': RESPONSE_SCHEMA,
             },
         }
         legacy_url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'

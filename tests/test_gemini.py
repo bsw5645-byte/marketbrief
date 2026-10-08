@@ -247,6 +247,7 @@ def test_public_url_400_falls_back_to_generate_content(monkeypatch):
     assert summary == SUMMARY
     assert calls[0][0].endswith('/v1beta/interactions')
     assert ':generateContent' in calls[1][0]
-    assert calls[1][1]['json']['contents'][0]['parts'][0]['file_data']['file_uri'] == VIDEO.url
+    assert calls[1][1]['json']['contents'][0]['parts'][0]['fileData']['fileUri'] == VIDEO.url
     assert calls[1][1]['json']['generationConfig']['responseMimeType'] == 'application/json'
+    assert calls[1][1]['json']['generationConfig']['responseJsonSchema'] == gemini.RESPONSE_SCHEMA
     assert meta['api'] == 'generateContent'
