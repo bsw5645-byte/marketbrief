@@ -53,6 +53,16 @@ def test_wrong_channel_rejected():
         parse_feed(feed([entry()], channel='wrong'), DAY, NOW)
 
 
+def test_feed_root_channel_id_without_uc_prefix():
+    assert parse_feed(feed([entry()], channel=CHANNEL_ID[2:]), DAY, NOW).video_id == VIDEO.video_id
+
+
+def test_entry_wrong_channel_rejected():
+    xml = feed([entry()]).replace('<entry>', '<entry><yt:channelId>wrong</yt:channelId>')
+    with pytest.raises(PipelineError):
+        parse_feed(xml, DAY, NOW)
+
+
 def test_explicit_id_still_date_checked():
     assert parse_feed(feed([entry('사용자 지정 영상')]), DAY, NOW, VIDEO.video_id).video_id == VIDEO.video_id
     with pytest.raises(NotReady):

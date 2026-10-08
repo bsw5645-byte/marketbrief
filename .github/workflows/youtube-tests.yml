@@ -39,6 +39,12 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python -m marketbrief.video --date 2026-10-07 --video-id YTU7rE9cEnQ --fetch-only
+      - name: Oct 7 GPT summary preview, no delivery
+        env:
+          PYTHONPATH: src
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5-mini' }}
+        run: python -m marketbrief.video --date 2026-10-07 --video-id YTU7rE9cEnQ
       - uses: actions/upload-artifact@v4
         if: always()
         with:

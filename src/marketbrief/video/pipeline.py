@@ -52,10 +52,14 @@ class Video:
 
 def parse_feed(xml, day, now, video_id=None, channel_id=CHANNEL_ID):
     root = ET.fromstring(xml)
-    if root.findtext('yt:channelId', namespaces=NS) != channel_id:
+    # YouTube's feed root may omit "UC"; entry channelIds retain it.
+    root_channel = root.findtext('yt:channelId', namespaces=NS)
+    if root_channel not in {channel_id, channel_id.removeprefix('UC')}:
         raise PipelineError('채널 ID 불일치: 잘못된 채널의 영상은 사용하지 않습니다.')
     candidates = []
     for entry in root.findall('a:entry', NS):
+        if entry.findtext('yt:channelId', channel_id, NS) != channel_id:
+            raise PipelineError('영상 채널 ID 불일치')
         vid = entry.findtext('yt:videoId', '', NS)
         title = entry.findtext('a:title', '', NS)
         published = entry.findtext('a:published', '', NS)
@@ -290,6 +294,9 @@ def run(day, now, state_dir, report_dir, send=False, video_id=None, fetch_only=F
         rows, metadata = fetcher(video.video_id)
         print(f"자막 수집 성공: {video.video_id}, {metadata['segments']}구간, {metadata['characters']}자")
         if fetch_only:
+            print('요약용 API 키 설정 여부:', bool(os.environ.get('OPENAI_API_KEY')))
+            print('Telegram 설정 여부:', bool(os.environ.get('TELEGRAM_BOT_TOKEN') and
+                                               os.environ.get('TELEGRAM_CHAT_ID')))
             report_dir.mkdir(parents=True, exist_ok=True)
             save_json(report_dir / 'probe.json', {'video': asdict(video), 'transcript': metadata,
                        'openai_key_present': bool(os.environ.get('OPENAI_API_KEY')),
