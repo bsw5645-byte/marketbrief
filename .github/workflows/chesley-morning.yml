@@ -128,6 +128,7 @@ jobs:
           # 4. 렌더링 및 텔레그램 발송
           print("\n1. 텔레그램 메시지 렌더링...")
           message = render(target_video, summary, today_date)
+          message = message.replace("이세무사 영상 브리핑", "체슬리TV 모닝브리프")
 
           print("2. 텔레그램 발송 시작...")
           try:
