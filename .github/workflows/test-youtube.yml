@@ -13,9 +13,11 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt -r requirements-youtube.txt
+          pip install -r requirements-closing.txt -r requirements-youtube.txt
+          pip install -e .
       - name: Run one-off analysis and telegram send
         env:
+          PYTHONPATH: src
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
