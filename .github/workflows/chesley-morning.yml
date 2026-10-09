@@ -26,67 +26,76 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - << 'EOF'
+          import json
           import os
+          import re
           import sys
           import time
           import urllib.request
-          import xml.etree.ElementTree as ET
           from datetime import datetime, timezone, timedelta
           from marketbrief.video.gemini import analyze_video
           from marketbrief.video.pipeline import Video, render, deliver_telegram
 
-          # 1. KST 날짜 및 체슬리TV 채널 설정
+          # 1. KST 날짜 설정
           KST = timezone(timedelta(hours=9))
-          now_kst = datetime.now(KST)
-          today_date = now_kst.date()
-          channel_id = "UCXST0Hq6CAmG0dmo3jgrlEw"
+          today_date = datetime.now(KST).date()
 
-          print(f"[{today_date}] 체슬리TV RSS 탐색 시작...")
-          feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+          print(f"[{today_date}] 체슬리TV 라이브 스트림 탐색 시작...")
+          streams_url = "https://www.youtube.com/@chesleytv/streams"
           
-          req = urllib.request.Request(feed_url, headers={"User-Agent": "Mozilla/5.0"})
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+              "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+          }
+          req = urllib.request.Request(streams_url, headers=headers)
+          
           try:
               with urllib.request.urlopen(req, timeout=30) as resp:
-                  xml_data = resp.read()
+                  html = resp.read().decode("utf-8", errors="replace")
           except Exception as e:
-              print(f"RSS 피드 수신 실패: {e}")
+              print(f"체슬리TV 페이지 접속 실패: {e}")
               sys.exit(0)
 
-          # 2. 당일 모닝브리프 영상 탐색
-          root = ET.fromstring(xml_data)
-          ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
-
+          # 2. 페이지 내부 데이터에서 모닝브리프 영상 추출
           target_entry = None
-          for entry in root.findall("atom:entry", ns):
-              title = entry.find("atom:title", ns).text
-              published_str = entry.find("atom:published", ns).text
-              video_id = entry.find("yt:videoId", ns).text
-              
-              # KST 변환
-              pub_dt = datetime.fromisoformat(published_str.replace("Z", "+00:00")).astimezone(KST)
-              
-              # 당일 업로드되고 제목에 '모닝' 또는 '브리프'가 포함된 영상
-              if pub_dt.date() == today_date and any(kw in title for kw in ["모닝", "브리프", "라이브"]):
-                  target_entry = {
-                      "video_id": video_id,
-                      "title": title,
-                      "published_at": pub_dt,
-                  }
-                  break
+          
+          # ytInitialData JSON 블록 탐색
+          match = re.search(r"var ytInitialData\s*=\s*({.+?});</script>", html)
+          if match:
+              try:
+                  data = json.loads(match.group(1))
+                  # JSON 텍스트 전체에서 비디오 렌더러 정보 매칭
+                  raw_str = match.group(1)
+                  video_matches = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})".*?"title":\{"runs":\[\{"text":"([^"]+)"\}\]', raw_str)
+                  for vid, title in video_matches:
+                      if any(kw in title for kw in ["모닝브리프", "운용회의", "모닝 브리프"]):
+                          target_entry = {"video_id": vid, "title": title}
+                          break
+              except Exception:
+                  pass
+
+          # 정규식 대체 탐색 (JSON 파싱 실패 대비)
+          if not target_entry:
+              video_pattern = re.findall(r'href="/watch\?v=([a-zA-Z0-9_-]{11})"[^>]*title="([^"]+)"', html)
+              for vid, title in video_pattern:
+                  if any(kw in title for kw in ["모닝브리프", "운용회의", "모닝"]):
+                      target_entry = {"video_id": vid, "title": title}
+                      break
 
           if not target_entry:
-              print("오늘자 체슬리TV 모닝브리프 영상을 아직 찾을 수 없습니다. (종료 대기)")
+              print("최신 모닝브리프 라이브 영상을 탐색하지 못했습니다. (종료 대기)")
               sys.exit(0)
 
-          print(f"타깃 영상 발견: {target_entry['title']} ({target_entry['video_id']})")
+          print(f"타깃 영상 확인: {target_entry['title']} ({target_entry['video_id']})")
+          
           target_video = Video(
               video_id=target_entry["video_id"],
               title=target_entry["title"],
-              published_at=target_entry["published_at"],
-              channel_id=channel_id,
+              published_at=datetime.now(timezone.utc),
+              channel_id="UCXST0Hq6CAmG0dmo3jgrlEw",
           )
 
-          # 3. Gemini 분석 (지수 백오프 및 대체 모델 적용)
+          # 3. Gemini 분석 (백오프 및 모델 자동 전환)
           candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]
           summary = None
           metadata = None
@@ -106,17 +115,17 @@ jobs:
                   break
 
           if summary is None:
-              raise RuntimeError("Gemini 영상 분석 최종 실패")
+              raise RuntimeError("모든 모델에서 영상 분석에 실패했습니다.")
 
           # 4. 렌더링 및 텔레그램 발송
           print("\n텔레그램 메시지 렌더링...")
           message = render(target_video, summary, today_date)
-          
+
           print("텔레그램 발송 시작...")
           try:
               deliver_telegram(message, receipt={}, save=lambda _: None)
           except TypeError:
               deliver_telegram(message, {}, lambda _: None)
 
-          print("체슬리TV 모닝브리프 발송 완료!")
+          print("🎉 체슬리TV 모닝브리프 발송 완료!")
           EOF
