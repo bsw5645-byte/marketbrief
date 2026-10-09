@@ -24,34 +24,63 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
         run: |
           python - << 'EOF'
-          import os
-          from datetime import date
+          import inspect
+          from datetime import date, datetime, timezone
           from marketbrief.video.gemini import analyze_video
+          from marketbrief.video.pipeline import Video, render, deliver_telegram
 
-          # Video 및 파이프라인 함수 가져오기
+          print("--- Video 객체 생성 ---")
+          sig = inspect.signature(Video)
+          print("Video 매개변수 목록:", list(sig.parameters.keys()))
+
+          dt = datetime(2026, 10, 7, 9, 28, 15, tzinfo=timezone.utc)
+          candidates = {
+              "video_id": "YTU7rE9cEnQ",
+              "title": "[과거 분석 예시 2026-10-07] 개인은 3조 샀는데 외국인·기관은 팔았다? 7,000선에 또 막힌 코스피...",
+              "published_at": dt,
+              "published": dt,
+              "channel_id": "UCowHl0BGalL433P6bCBgeKA",
+          }
+
+          kwargs = {k: v for k, v in candidates.items() if k in sig.parameters}
           try:
-              from marketbrief.video.pipeline import Video, render, deliver_telegram
-          except ImportError:
-              from marketbrief.video import Video, render, deliver_telegram
-
-          # 10월 7일 원본 영상 객체 생성
-          target_video = Video(
-              video_id="YTU7rE9cEnQ",
-              title="[과거 분석 예시 2026-10-07] 개인은 3조 샀는데 외국인·기관은 팔았다? 7,000선에 또 막힌 코스피...",
-              published_at="2026-10-07T09:28:15+00:00",
-              url="https://www.youtube.com/watch?v=YTU7rE9cEnQ",
-              channel_id="UCowHl0BGalL433P6bCBgeKA",
-          )
-
-          print("1. Gemini 원본 영상 분석 시작...")
-          summary, metadata = analyze_video(target_video)
-          print(f"2. 분석 완료 (모델: {metadata.get('model')})")
-
-          message = render(target_video, summary, date(2026, 10, 7))
-          print("3. 텔레그램 발송 시작...")
-          try:
-              deliver_telegram(message, receipt="data/youtube/test-2026-10-07.json", save=False)
+              target_video = Video(**kwargs)
           except TypeError:
-              deliver_telegram(message, "data/youtube/test-2026-10-07.json", False)
-          print("4. 발송 완료!")
+              if "published_at" in kwargs:
+                  kwargs["published_at"] = "2026-10-07T09:28:15+00:00"
+              if "published" in kwargs:
+                  kwargs["published"] = "2026-10-07T09:28:15+00:00"
+              target_video = Video(**kwargs)
+
+          if not hasattr(target_video, "url") or not target_video.url:
+              try:
+                  object.__setattr__(target_video, "url", "https://www.youtube.com/watch?v=YTU7rE9cEnQ")
+              except Exception:
+                  pass
+
+          print("생성된 Target Video:", target_video)
+
+          print("\n1. Gemini 원본 영상 분석 시작 (503 재시도 및 모델 전환 적용)...")
+          summary, metadata = analyze_video(target_video)
+          print(f"2. 분석 완료! 사용 모델: {metadata.get('model')}")
+
+          print("\n3. 메시지 렌더링...")
+          render_sig = inspect.signature(render)
+          if len(render_sig.parameters) >= 3:
+              message = render(target_video, summary, date(2026, 10, 7))
+          else:
+              message = render(target_video, summary)
+
+          print("\n4. 텔레그램 발송...")
+          dt_sig = inspect.signature(deliver_telegram)
+          dt_params = list(dt_sig.parameters.keys())
+          receipt_path = "data/youtube/test-2026-10-07.json"
+          if len(dt_params) >= 3:
+              deliver_telegram(message, receipt_path, False)
+          elif len(dt_params) == 2:
+              deliver_telegram(message, receipt_path)
+          else:
+              deliver_telegram(message)
+
+          print("5. 텔레그램 발송 완료!")
           EOF
