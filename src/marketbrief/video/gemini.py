@@ -186,7 +186,7 @@ def _read_video(video, session, prompt, model=None, draft=False):
     if result['accessible'] is not True:
         raise NotReady('Gemini가 영상 내용을 읽지 못했습니다. 제목으로 요약하지 않습니다.')
     duration = whole_seconds(result['duration_seconds'])
-    if not 60 <= duration <= 7200:
+    if not 60 <= duration <= 14400:
         raise PipelineError('영상 길이 검증 실패')
     summary = result['summary']
     evidence = result['evidence']
