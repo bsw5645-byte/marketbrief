@@ -1,0 +1,122 @@
+name: Chesley Morning Brief
+
+on:
+  schedule:
+    # 월~금 한국 시각(KST) 10:00 실행 (UTC 01:00)
+    - cron: '0 1 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  chesley-morning:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-closing.txt -r requirements-youtube.txt
+          pip install -e .
+      - name: Analyze Chesley Morning Brief & Send Telegram
+        env:
+          PYTHONPATH: src
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - << 'EOF'
+          import os
+          import sys
+          import time
+          import urllib.request
+          import xml.etree.ElementTree as ET
+          from datetime import datetime, timezone, timedelta
+          from marketbrief.video.gemini import analyze_video
+          from marketbrief.video.pipeline import Video, render, deliver_telegram
+
+          # 1. KST 날짜 및 체슬리TV 채널 설정
+          KST = timezone(timedelta(hours=9))
+          now_kst = datetime.now(KST)
+          today_date = now_kst.date()
+          channel_id = "UCXST0Hq6CAmG0dmo3jgrlEw"
+
+          print(f"[{today_date}] 체슬리TV RSS 탐색 시작...")
+          feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+          
+          req = urllib.request.Request(feed_url, headers={"User-Agent": "Mozilla/5.0"})
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  xml_data = resp.read()
+          except Exception as e:
+              print(f"RSS 피드 수신 실패: {e}")
+              sys.exit(0)
+
+          # 2. 당일 모닝브리프 영상 탐색
+          root = ET.fromstring(xml_data)
+          ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+
+          target_entry = None
+          for entry in root.findall("atom:entry", ns):
+              title = entry.find("atom:title", ns).text
+              published_str = entry.find("atom:published", ns).text
+              video_id = entry.find("yt:videoId", ns).text
+              
+              # KST 변환
+              pub_dt = datetime.fromisoformat(published_str.replace("Z", "+00:00")).astimezone(KST)
+              
+              # 당일 업로드되고 제목에 '모닝' 또는 '브리프'가 포함된 영상
+              if pub_dt.date() == today_date and any(kw in title for kw in ["모닝", "브리프", "라이브"]):
+                  target_entry = {
+                      "video_id": video_id,
+                      "title": title,
+                      "published_at": pub_dt,
+                  }
+                  break
+
+          if not target_entry:
+              print("오늘자 체슬리TV 모닝브리프 영상을 아직 찾을 수 없습니다. (종료 대기)")
+              sys.exit(0)
+
+          print(f"타깃 영상 발견: {target_entry['title']} ({target_entry['video_id']})")
+          target_video = Video(
+              video_id=target_entry["video_id"],
+              title=target_entry["title"],
+              published_at=target_entry["published_at"],
+              channel_id=channel_id,
+          )
+
+          # 3. Gemini 분석 (지수 백오프 및 대체 모델 적용)
+          candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]
+          summary = None
+          metadata = None
+
+          for model_name in candidate_models:
+              print(f"\nGemini 분석 시도 ({model_name})...")
+              os.environ["GEMINI_MODEL"] = model_name
+              for attempt in range(1, 4):
+                  try:
+                      summary, metadata = analyze_video(target_video)
+                      print(f"분석 완료! (적용 모델: {metadata.get('model')})")
+                      break
+                  except Exception as exc:
+                      print(f"시도 {attempt}/3 실패: {exc}")
+                      time.sleep(20)
+              if summary is not None:
+                  break
+
+          if summary is None:
+              raise RuntimeError("Gemini 영상 분석 최종 실패")
+
+          # 4. 렌더링 및 텔레그램 발송
+          print("\n텔레그램 메시지 렌더링...")
+          message = render(target_video, summary, today_date)
+          
+          print("텔레그램 발송 시작...")
+          try:
+              deliver_telegram(message, receipt={}, save=lambda _: None)
+          except TypeError:
+              deliver_telegram(message, {}, lambda _: None)
+
+          print("체슬리TV 모닝브리프 발송 완료!")
+          EOF
