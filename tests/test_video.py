@@ -139,10 +139,10 @@ def test_cloud_block_not_bypassed():
 def test_summary_validation(change):
     s = deepcopy(SUMMARY)
     if change == 'wrong_at': s['headline']['at'] = 1234
-    elif change == 'long_text': s['headline']['text'] = '가' * 161
+    elif change == 'long_text': s['headline']['text'] = '가' * 401
     elif change == 'extra': s['invented'] = []
     elif change == 'invalid_at_type': s['headline']['at'] = True
-    elif change == 'too_many': s['market'] *= 4
+    elif change == 'too_many': s['market'] *= 7
     with pytest.raises(PipelineError): validate_summary(s, ROWS)
 
 
@@ -180,9 +180,9 @@ def test_incomplete_gpt_response_is_not_used(monkeypatch):
 
 def test_render_clear_labels_and_source():
     text = render(VIDEO, SUMMARY, DAY)
-    assert '한눈에 보는 오늘' in text and '강한 산업' in text
+    assert '핵심 결론' in text and '강세 업종' in text
     assert VIDEO.url in text and '(0:45)' in text
-    assert '명확히 언급되지 않음' in text and '매매 신호 아님' in text
+    assert '명확히 언급되지 않음' in text and '발표자의 의견' in text
 
 
 def test_receipts_skip_completed_parts(monkeypatch):
