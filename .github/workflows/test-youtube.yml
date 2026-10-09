@@ -21,10 +21,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_MODEL: gemini-3.8-flash
         run: |
           python - << 'EOF'
-          import inspect
+          import os
+          import time
           from datetime import date, datetime, timezone
           from marketbrief.video.gemini import analyze_video
           from marketbrief.video.pipeline import Video, render, deliver_telegram
@@ -37,28 +37,45 @@ jobs:
               channel_id="UCowHl0BGalL433P6bCBgeKA",
           )
 
-          print("1. Gemini 원본 영상 분석 시작 (gemini-3.8-flash)...")
-          summary, metadata = analyze_video(target_video)
-          print(f"2. 분석 완료! 사용 모델: {metadata.get('model')}")
+          # 503 발생 시 자동 전환할 후보 모델 목록
+          candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]
+          summary = None
+          metadata = None
 
-          print("3. 메시지 렌더링...")
-          render_sig = inspect.signature(render)
-          if len(render_sig.parameters) >= 3:
-              message = render(target_video, summary, date(2026, 10, 7))
-          else:
-              message = render(target_video, summary)
+          for model_name in candidate_models:
+              print(f"\n==========================================")
+              print(f"Gemini 원본 영상 분석 시도: {model_name}")
+              print(f"==========================================")
+              os.environ["GEMINI_MODEL"] = model_name
+              
+              for attempt in range(1, 4):
+                  try:
+                      summary, metadata = analyze_video(target_video)
+                      print(f"===> 영상 분석 성공! (적용 모델: {metadata.get('model')})")
+                      break
+                  except Exception as e:
+                      err_msg = str(e)
+                      print(f"[{model_name} 시도 {attempt}/3 실패]: {err_msg}")
+                      if "503" in err_msg or "서비스 응답 실패" in err_msg:
+                          print("Google 일시 부하(503) 감지. 20초 대기 후 다시 시도합니다...")
+                          time.sleep(20)
+                      else:
+                          break
+              if summary is not None:
+                  break
 
-          print("4. 텔레그램 발송...")
-          # receipt는 dict 객체로 전달하여 운영 receipt 오염 없이 1회 발송
-          receipt = {}
-          dt_sig = inspect.signature(deliver_telegram)
-          dt_params = list(dt_sig.parameters.keys())
-          if len(dt_params) >= 3:
-              deliver_telegram(message, receipt, False)
-          elif len(dt_params) == 2:
-              deliver_telegram(message, receipt)
-          else:
-              deliver_telegram(message)
+          if summary is None:
+              raise RuntimeError("모든 후보 모델 및 재시도에서 영상 분석에 실패했습니다.")
 
-          print("===> 텔레그램 발송 완료! <===")
+          print("\n1. 텔레그램 메시지 렌더링...")
+          message = render(target_video, summary, date(2026, 10, 7))
+
+          print("2. 텔레그램 발송 시작...")
+          # receipt를 올바른 dict 객체로 전달하여 텔레그램 발송 완료
+          try:
+              deliver_telegram(message, receipt={}, save=False)
+          except TypeError:
+              deliver_telegram(message, {}, False)
+
+          print("\n🎉 [성공] 텔레그램 발송이 성공적으로 완료되었습니다!")
           EOF
