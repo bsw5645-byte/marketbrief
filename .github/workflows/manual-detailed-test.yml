@@ -1,0 +1,48 @@
+name: Manual YouTube Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  send-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -r requirements-youtube.txt
+      - name: Run one-off analysis and telegram send
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
+        run: |
+          python - << 'EOF'
+          import os
+          from datetime import date
+          from marketbrief.video.models import Video
+          from marketbrief.video.gemini import analyze_video
+          from marketbrief.video.pipeline import render, deliver_telegram
+
+          # 10월 7일 원본 영상 지정
+          target_video = Video(
+              video_id="YTU7rE9cEnQ",
+              title="[과거 분석 예시 2026-10-07] 개인은 3조 샀는데 외국인·기관은 팔았다? 7,000선에 또 막힌 코스피...",
+              published_at="2026-10-07T09:28:15+00:00",
+              url="https://www.youtube.com/watch?v=YTU7rE9cEnQ",
+              channel_id="UCowHl0BGalL433P6bCBgeKA",
+          )
+
+          print("1. Gemini 원본 영상 분석 시작...")
+          summary, metadata = analyze_video(target_video)
+          print(f"2. 분석 완료 (모델: {metadata.get('model')})")
+
+          message = render(target_video, summary, date(2026, 10, 7))
+          print("3. 텔레그램 발송 시작...")
+          deliver_telegram(message, receipt_path="data/youtube/test-2026-10-07.json", save=False)
+          print("4. 발송 완료!")
+          EOF
