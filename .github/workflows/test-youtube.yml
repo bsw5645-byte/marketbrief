@@ -21,98 +21,34 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_MODEL: gemini-3.8-flash
         run: |
           python - << 'EOF'
-          import os
-          import sys
-          import json
           import inspect
-          import urllib.request
-          import urllib.error
           from datetime import date, datetime, timezone
-
-          key = os.environ.get("GEMINI_API_KEY")
-          if not key:
-              print("GEMINI_API_KEY가 없습니다.")
-              sys.exit(1)
-
-          print("--- 1. 계정에서 사용 가능한 실제 Gemini 모델 목록 조회 ---")
-          try:
-              req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}")
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  data = json.loads(resp.read().decode("utf-8"))
-                  available_models = [
-                      m["name"].replace("models/", "")
-                      for m in data.get("models", [])
-                      if "generateContent" in m.get("supportedGenerationMethods", [])
-                  ]
-                  print("사용 가능한 모델 목록:", available_models)
-          except Exception as e:
-              print(f"모델 목록 조회 실패: {e}")
-              available_models = []
-
-          # 우선순위 모델 자동 매칭
-          preferred_candidates = [
-              "gemini-2.0-flash",
-              "gemini-1.5-flash",
-              "gemini-1.5-flash-latest",
-              "gemini-2.5-flash",
-              "gemini-3.8-flash",
-          ]
-          selected_model = None
-          for cand in preferred_candidates:
-              if cand in available_models:
-                  selected_model = cand
-                  break
-
-          if not selected_model:
-              flash_models = [m for m in available_models if "flash" in m]
-              selected_model = flash_models[0] if flash_models else (available_models[0] if available_models else "gemini-1.5-flash")
-
-          print(f"\n===> 최종 선택된 실제 유효 모델: {selected_model} <===")
-          os.environ["GEMINI_MODEL"] = selected_model
-
           from marketbrief.video.gemini import analyze_video
           from marketbrief.video.pipeline import Video, render, deliver_telegram
 
-          print("\n--- 2. Target Video 객체 생성 ---")
-          sig = inspect.signature(Video)
           dt = datetime(2026, 10, 7, 9, 28, 15, tzinfo=timezone.utc)
-          kwargs = {
-              "video_id": "YTU7rE9cEnQ",
-              "title": "[과거 분석 예시 2026-10-07] 개인은 3조 샀는데 외국인·기관은 팔았다? 7,000선에 또 막힌 코스피...",
-              "published_at": dt,
-              "channel_id": "UCowHl0BGalL433P6bCBgeKA",
-          }
-          target_video = Video(**{k: v for k, v in kwargs.items() if k in sig.parameters})
-          print("Target Video 준비 완료:", target_video.video_id)
+          target_video = Video(
+              video_id="YTU7rE9cEnQ",
+              title="[과거 분석 예시 2026-10-07] 개인은 3조 샀는데 외국인·기관은 팔았다? 7,000선에 또 막힌 코스피...",
+              published_at=dt,
+              channel_id="UCowHl0BGalL433P6bCBgeKA",
+          )
 
-          print(f"\n--- 3. Gemini 원본 영상 분석 시작 ({selected_model}) ---")
-          try:
-              summary, metadata = analyze_video(target_video)
-              print(f"분석 완료! 응답 모델: {metadata.get('model')}")
-          except Exception as exc:
-              print(f"분석 중 에러 발생: {exc}")
-              test_url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent?key={key}"
-              test_payload = json.dumps({
-                  "contents": [{"role": "user", "parts": [{"fileData": {"fileUri": target_video.url}}, {"text": "ping"}]}]
-              }).encode("utf-8")
-              try:
-                  req = urllib.request.Request(test_url, data=test_payload, headers={"Content-Type": "application/json"})
-                  urllib.request.urlopen(req, timeout=30)
-              except urllib.error.HTTPError as h_err:
-                  err_body = h_err.read().decode("utf-8", errors="replace")
-                  print(f"Google API 실제 응답 본문 ({h_err.code}): {err_body}")
-              raise
+          print("1. Gemini 원본 영상 분석 시작 (gemini-3.8-flash)...")
+          summary, metadata = analyze_video(target_video)
+          print(f"2. 분석 완료! 사용 모델: {metadata.get('model')}")
 
-          print("\n--- 4. 메시지 렌더링 ---")
+          print("3. 메시지 렌더링...")
           render_sig = inspect.signature(render)
           if len(render_sig.parameters) >= 3:
               message = render(target_video, summary, date(2026, 10, 7))
           else:
               message = render(target_video, summary)
 
-          print("\n--- 5. 텔레그램 발송 ---")
+          print("4. 텔레그램 발송...")
           dt_sig = inspect.signature(deliver_telegram)
           dt_params = list(dt_sig.parameters.keys())
           receipt_path = "data/youtube/test-2026-10-07.json"
@@ -123,5 +59,5 @@ jobs:
           else:
               deliver_telegram(message)
 
-          print("\n===> 텔레그램 발송 완료! <===")
+          print("===> 텔레그램 발송 완료! <===")
           EOF
