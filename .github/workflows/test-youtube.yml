@@ -49,13 +49,14 @@ jobs:
               message = render(target_video, summary)
 
           print("4. 텔레그램 발송...")
+          # receipt는 dict 객체로 전달하여 운영 receipt 오염 없이 1회 발송
+          receipt = {}
           dt_sig = inspect.signature(deliver_telegram)
           dt_params = list(dt_sig.parameters.keys())
-          receipt_path = "data/youtube/test-2026-10-07.json"
           if len(dt_params) >= 3:
-              deliver_telegram(message, receipt_path, False)
+              deliver_telegram(message, receipt, False)
           elif len(dt_params) == 2:
-              deliver_telegram(message, receipt_path)
+              deliver_telegram(message, receipt)
           else:
               deliver_telegram(message)
 
