@@ -75,28 +75,16 @@ def _read_video(video, session, prompt, model=None, draft=False):
     }
     url = 'https://generativelanguage.googleapis.com/v1beta/interactions'
     start_model = model
+    r = None
     try:
-        for wait in (0,) + RETRY_WAITS:
-            if wait:
-                time.sleep(wait)
-            payload['model'] = model
-            r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 60))
-            # One documented alternative model for temporary unavailability.
-            if r.status_code == 503 and model == MODEL:
-                model = FALLBACK_MODEL
-                payload['model'] = model
-                r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 60))
-            if r.status_code != 503:
-                break
-            model = start_model  # next round starts again from the requested model
+        payload['model'] = model
+        r = session.post(url, headers={'x-goog-api-key': key}, json=payload, timeout=(10, 60))
     except Exception:
-        raise PipelineError('Gemini 연결 실패: 완성된 요약을 받지 못했습니다.') from None
+        pass
 
     api_name = 'interactions'
-    # Background execution is not currently accepted with every public YouTube
-    # URL request. The documented generateContent URL input remains a safe
-    # compatibility path and has the same no-storage behavior.
-    if r.status_code == 400:
+    # interactions가 성공(200)하지 못하면(400, 503, 404 등 모두) 즉시 검증된 generateContent 경로로 진입
+    if r is None or r.status_code != 200:
         api_name = 'generateContent'
         legacy_payload = {
             'contents': [
@@ -121,7 +109,7 @@ def _read_video(video, session, prompt, model=None, draft=False):
                     time.sleep(wait)
                 legacy_url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
                 r = session.post(legacy_url, headers={'x-goog-api-key': key}, json=legacy_payload, timeout=(10, 420))
-                # generateContent 경로에서도 503 발생 시 Fallback 모델로 자동 전환
+                # generateContent에서 503 발생 시 fallback 모델(gemini-3.7-flash)로 전환
                 if r.status_code == 503 and model == MODEL:
                     model = FALLBACK_MODEL
                     fallback_url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
@@ -130,12 +118,11 @@ def _read_video(video, session, prompt, model=None, draft=False):
                     )
                 if r.status_code != 503:
                     break
-                model = legacy_start_model  # 다음 재시도 라운드는 다시 기본 모델부터 시작
+                model = legacy_start_model
         except Exception:
             raise PipelineError('Gemini 연결 실패: 완성된 요약을 받지 못했습니다.') from None
 
     if r.status_code != 200:
-        # Upstream bodies can repeat credentials or request URLs. Do not log them.
         reasons = {
             400: '영상 URL 또는 요청 형식 확인 필요',
             401: 'API 키 인증 실패',
@@ -168,8 +155,6 @@ def _read_video(video, session, prompt, model=None, draft=False):
                 ],
                 'usage': data.get('usageMetadata', {}),
             }
-        # Long video analysis is accepted as a background interaction. Polling
-        # avoids holding one HTTP connection open until GitHub terminates it.
         if data.get('status') == 'in_progress':
             interaction_id = data.get('id')
             if not isinstance(interaction_id, str) or not re.fullmatch(r'[A-Za-z0-9._:-]{1,256}', interaction_id):
@@ -224,8 +209,6 @@ def _read_video(video, session, prompt, model=None, draft=False):
 
     if not in_range(summary['headline']):
         raise PipelineError(f"영상 근거 시각 범위 오류: {summary['headline']['at']}초 / 영상 길이 {duration}초")
-    # A point whose timestamp lies outside the video cannot be traced to the source.
-    # Drop that point instead of guessing a new time; the rest of the summary stays checkable.
     for field in ('market', 'strong', 'weak', 'watch'):
         kept = [p for p in summary[field] if in_range(p)]
         dropped += len(summary[field]) - len(kept)
@@ -259,15 +242,12 @@ def _read_video(video, session, prompt, model=None, draft=False):
         'usage': data.get('usage', {}),
         'dropped_out_of_range': dropped,
     }
-    # Timestamps are model estimates, not verified transcript line starts.
     return summary, metadata
 
 
 def analyze_video(video, session=None):
     session = session or BoundedSession()
     if os.environ.get('GEMINI_REVIEW') != '1':
-        # Default: one video request per summary. A same-model second pass doubled
-        # free-tier usage without guaranteeing accuracy; enable with GEMINI_REVIEW=1.
         summary, metadata = _read_video(video, session, PROMPT)
         metadata['reviewed'] = False
         metadata['review_changed_summary'] = False
