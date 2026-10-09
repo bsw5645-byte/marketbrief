@@ -37,7 +37,6 @@ jobs:
               channel_id="UCowHl0BGalL433P6bCBgeKA",
           )
 
-          # 503 발생 시 자동 전환할 후보 모델 목록
           candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]
           summary = None
           metadata = None
@@ -71,11 +70,11 @@ jobs:
           message = render(target_video, summary, date(2026, 10, 7))
 
           print("2. 텔레그램 발송 시작...")
-          # receipt를 올바른 dict 객체로 전달하여 텔레그램 발송 완료
+          # save 인자에 no-op 함수(lambda _: None)를 전달하여 정상 종료 유도
           try:
-              deliver_telegram(message, receipt={}, save=False)
+              deliver_telegram(message, receipt={}, save=lambda _: None)
           except TypeError:
-              deliver_telegram(message, {}, False)
+              deliver_telegram(message, {}, lambda _: None)
 
-          print("\n🎉 [성공] 텔레그램 발송이 성공적으로 완료되었습니다!")
+          print("\n🎉 [성공] 텔레그램 발송 및 작업이 성공적으로 완료되었습니다!")
           EOF
