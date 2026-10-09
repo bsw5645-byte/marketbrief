@@ -26,11 +26,15 @@ jobs:
           python - << 'EOF'
           import os
           from datetime import date
-          from marketbrief.video.models import Video
           from marketbrief.video.gemini import analyze_video
-          from marketbrief.video.pipeline import render, deliver_telegram
 
-          # 10월 7일 원본 영상 지정
+          # Video 및 파이프라인 함수 가져오기
+          try:
+              from marketbrief.video.pipeline import Video, render, deliver_telegram
+          except ImportError:
+              from marketbrief.video import Video, render, deliver_telegram
+
+          # 10월 7일 원본 영상 객체 생성
           target_video = Video(
               video_id="YTU7rE9cEnQ",
               title="[과거 분석 예시 2026-10-07] 개인은 3조 샀는데 외국인·기관은 팔았다? 7,000선에 또 막힌 코스피...",
@@ -45,6 +49,9 @@ jobs:
 
           message = render(target_video, summary, date(2026, 10, 7))
           print("3. 텔레그램 발송 시작...")
-          deliver_telegram(message, receipt_path="data/youtube/test-2026-10-07.json", save=False)
+          try:
+              deliver_telegram(message, receipt="data/youtube/test-2026-10-07.json", save=False)
+          except TypeError:
+              deliver_telegram(message, "data/youtube/test-2026-10-07.json", False)
           print("4. 발송 완료!")
           EOF
