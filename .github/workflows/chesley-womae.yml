@@ -1,0 +1,135 @@
+name: Chesley Womae Sinbak
+
+on:
+  schedule:
+    # 월~금 한국 시각(KST) 20:00 실행 (UTC 11:00)
+    - cron: '0 11 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  chesley-womae:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-closing.txt -r requirements-youtube.txt
+          pip install -e .
+      - name: Analyze Chesley Womae Sinbak & Send Telegram
+        env:
+          PYTHONPATH: src
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - << 'EOF'
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.request
+          from datetime import datetime, timezone, timedelta
+          from marketbrief.video.gemini import analyze_video
+          from marketbrief.video.pipeline import Video, render, deliver_telegram
+
+          KST = timezone(timedelta(hours=9))
+          today_date = datetime.now(KST).date()
+
+          print(f"[{today_date}] 체슬리TV [워매신박] 탐색 시작...")
+          videos_url = "https://www.youtube.com/@chesleytv/videos"
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+              "Accept-Language": "ko-KR,ko;q=0.9",
+          }
+          req = urllib.request.Request(videos_url, headers=headers)
+
+          target_entry = None
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  html = resp.read().decode("utf-8", errors="replace")
+
+              match = re.search(r"var ytInitialData\s*=\s*({.+?});</script>", html)
+              if match:
+                  data = json.loads(match.group(1))
+                  def extract_videos(node):
+                      vids = []
+                      if isinstance(node, dict):
+                          if "videoId" in node and "title" in node:
+                              t_obj = node["title"]
+                              title = ""
+                              if isinstance(t_obj, dict):
+                                  if "runs" in t_obj:
+                                      title = "".join(r.get("text", "") for r in t_obj["runs"])
+                                  elif "simpleText" in t_obj:
+                                      title = t_obj["simpleText"]
+                              if title:
+                                  vids.append({"video_id": node["videoId"], "title": title})
+                          for val in node.values():
+                              vids.extend(extract_videos(val))
+                      elif isinstance(node, list):
+                          for item in node:
+                              vids.extend(extract_videos(item))
+                      return vids
+
+                  for item in extract_videos(data):
+                      if "워매신박" in item["title"]:
+                          target_entry = item
+                          break
+          except Exception as e:
+              print(f"탐색 중 안내: {e}")
+
+          if not target_entry:
+              print("최신 워매신박 영상을 찾을 수 없습니다. (종료 대기)")
+              sys.exit(0)
+
+          print(f"\n타깃 영상 확정: {target_entry['title']}")
+          print(f"YouTube ID: {target_entry['video_id']}")
+
+          target_video = Video(
+              video_id=target_entry["video_id"],
+              title=target_entry["title"],
+              published_at=datetime.now(timezone.utc),
+              channel_id="UCXST0Hq6CAmG0dmo3jgrlEw",
+          )
+
+          # Gemini 분석 (gemini-3.8-flash -> gemini-3.7-flash)
+          candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash"]
+          summary = None
+          metadata = None
+
+          for model_name in candidate_models:
+              print(f"\n==========================================")
+              print(f"Gemini 영상 분석 시도: {model_name}")
+              print(f"==========================================")
+              os.environ["GEMINI_MODEL"] = model_name
+              for attempt in range(1, 4):
+                  try:
+                      summary, metadata = analyze_video(target_video)
+                      print(f"===> 영상 분석 성공! (적용 모델: {metadata.get('model')})")
+                      break
+                  except Exception as exc:
+                      print(f"[{model_name} 시도 {attempt}/3 실패]: {exc}")
+                      time.sleep(20)
+              if summary is not None:
+                  break
+
+          if summary is None:
+              raise RuntimeError("모든 모델에서 영상 분석에 실패했습니다.")
+
+          # 렌더링 및 텔레그램 발송
+          print("\n1. 텔레그램 메시지 렌더링...")
+          message = render(target_video, summary, today_date)
+          message = message.replace("이세무사 영상 브리핑", "체슬리TV 워매신박")
+
+          print("2. 텔레그램 발송 시작...")
+          try:
+              deliver_telegram(message, receipt={}, save=lambda _: None)
+          except TypeError:
+              deliver_telegram(message, {}, lambda _: None)
+
+          print("\n🎉 체슬리TV 워매신박 텔레그램 발송 완료!")
+          EOF
