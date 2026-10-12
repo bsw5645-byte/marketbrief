@@ -2,8 +2,8 @@ name: Chesley Morning Brief
 
 on:
   schedule:
-    # 월~금 한국 시각(KST) 10:00 실행 (UTC 01:00)
-    - cron: '0 1 * * 1-5'
+    # 월~금 한국 시각(KST) 11:00 실행 (UTC 02:00)
+    - cron: '0 2 * * 1-5'
   workflow_dispatch:
 
 jobs:
