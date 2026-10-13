@@ -27,13 +27,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - << 'EOF'
-          import base64
           import json
           import os
           import subprocess
           import sys
           import time
-          import urllib.request
           from datetime import datetime, timezone, timedelta
           from marketbrief.video.gemini import analyze_video
           from marketbrief.video.pipeline import Video, render, deliver_telegram
@@ -42,12 +40,11 @@ jobs:
           now_kst = datetime.now(KST)
           today_date = now_kst.date()
 
-          print(f"[{today_date}] 슈퍼개미 이세무사TV 마감시황 탐색 시작...")
+          print(f"[{today_date}] 슈퍼개미 이세무사TV 당일 마감시황 자동 탐색 시작...")
 
-          # 1. yt-dlp 한국어 강제 옵션으로 최근 영상 5개 조회
+          # 1. yt-dlp로 채널의 최근 업로드 영상 목록 조회 (한국어 강제)
           cmd = [
               "yt-dlp",
-              "--flat-playlist",
               "--dump-json",
               "--playlist-items", "1-5",
               "--extractor-args", "youtube:lang=ko",
@@ -64,41 +61,63 @@ jobs:
                   title = item.get("title", "")
                   vid = item.get("id")
 
-                  # 마감시황 키워드 매칭
-                  if any(kw in title for kw in ["마감시황", "장마감", "코스피", "200일선", "박스권"]):
-                      target_entry = {"video_id": vid, "title": title}
-                      print(f"채널에서 마감시황 후보 발견: {title} ({vid})")
+                  # 쇼츠 영상 제외
+                  if "shorts" in item.get("url", "") or "Shorts" in title:
+                      continue
+
+                  # 업로드 일자(KST) 추출
+                  timestamp = item.get("timestamp")
+                  if timestamp:
+                      pub_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(KST)
+                      upload_date = pub_dt.date()
+                  elif item.get("upload_date"):
+                      upload_date = datetime.strptime(item["upload_date"], "%Y%m%d").date()
+                      pub_dt = datetime(upload_date.year, upload_date.month, upload_date.day, tzinfo=KST)
+                  else:
+                      upload_date = None
+                      pub_dt = datetime.now(timezone.utc)
+
+                  # 당일(오늘) 날짜 일치 확인
+                  is_today = (upload_date == today_date) or (now_kst.strftime("%m.%d") in title) or (f"{now_kst.month}월 {now_kst.day}일" in title)
+
+                  # 마감시황 키워드 판별 (제목에 '마감'이 없어도 코스피/코스닥/수급 등 시황 영상 포착)
+                  is_market_close = any(kw in title for kw in ["마감시황", "마감", "장마감", "코스피", "코스닥", "수급", "외국인", "200일선", "박스권", "시장 흐름", "지수"])
+
+                  print(f"후보 영상: [{title}] | 업로드일: {upload_date} | 당일여부: {is_today}")
+
+                  if is_today and is_market_close:
+                      target_entry = {
+                          "video_id": vid,
+                          "title": title,
+                          "published_at": pub_dt,
+                      }
                       break
           except Exception as e:
-              print(f"탐색 중 오류: {e}")
+              print(f"영상 탐색 중 오류: {e}")
 
-          # 2. 지금처럼 오전 10시라 당일 영상이 아직 없을 경우: 10월 12일 실전 마감시황으로 테스트
-          if not target_entry or target_entry.get("video_id") == "GB-BmkeKurQ":
-              print("\n[테스트 모드] 10월 12일 실제 이세무사 마감시황 영상으로 분석을 진행합니다.")
-              target_entry = {
-                  "video_id": "GB-BmkeKurQ",
-                  "title": "코스피 6,500선 아래로 지금 확인해야 할 시장 흐름! (외국인 수급·200일선·박스권 분석)",
-              }
+          # 당일 마감 영상이 아직 업로드되지 않은 경우 (휴장일 또는 이른 시각 실행)
+          if not target_entry:
+              print(f"\n[안내] 오늘({today_date})자 이세무사 마감시황 영상이 아직 업로드되지 않았습니다. 작업을 안전하게 종료합니다.")
+              sys.exit(0)
 
-          print(f"\n최종 타깃 확정: {target_entry['title']}")
+          print(f"\n타깃 영상 확정 (당일 마감시황): {target_entry['title']}")
           print(f"YouTube ID: {target_entry['video_id']}")
+          print(f"게시 일시: {target_entry['published_at']}")
 
           target_video = Video(
               video_id=target_entry["video_id"],
               title=target_entry["title"],
-              published_at=datetime(2026, 10, 12, 9, 30, 0, tzinfo=timezone.utc),
+              published_at=target_entry["published_at"],
               channel_id="UCowHl0BGalL433P6bCBgeKA",
           )
 
-          # 3. Gemini 영상 분석 (gemini-3.8-flash -> gemini-3.7-flash)
+          # 2. Gemini 본영상 상세 요약 분석 (3.8-flash -> 3.7-flash 자동 전환)
           candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash"]
           summary = None
           metadata = None
 
           for model_name in candidate_models:
-              print(f"\n==========================================")
-              print(f"Gemini 마감시황 분석 시도: {model_name}")
-              print(f"==========================================")
+              print(f"\nGemini 마감시황 영상 분석 시도: {model_name}...")
               os.environ["GEMINI_MODEL"] = model_name
               for attempt in range(1, 4):
                   try:
@@ -114,9 +133,9 @@ jobs:
           if summary is None:
               raise RuntimeError("Gemini 영상 분석에 실패했습니다.")
 
-          # 4. 렌더링 및 텔레그램 발송
+          # 3. 렌더링 및 텔레그램 발송 (당일 날짜로 정확히 동적 반영)
           print("\n1. 텔레그램 메시지 렌더링...")
-          message = render(target_video, summary, datetime(2026, 10, 12).date())
+          message = render(target_video, summary, today_date)
 
           print("2. 텔레그램 발송 시작...")
           try:
@@ -124,5 +143,5 @@ jobs:
           except TypeError:
               deliver_telegram(message, {}, lambda _: None)
 
-          print("\n🎉 이세무사TV 10월 12일 마감시황 텔레그램 발송 완료!")
+          print(f"\n🎉 오늘({today_date})자 이세무사TV 마감시황 텔레그램 발송 완료!")
           EOF
