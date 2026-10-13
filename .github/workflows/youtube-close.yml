@@ -27,9 +27,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - << 'EOF'
-          import base64
           import json
           import os
+          import socket
           import sys
           import time
           import urllib.request
@@ -38,14 +38,12 @@ jobs:
           from marketbrief.video.gemini import analyze_video
           from marketbrief.video.pipeline import Video, render, deliver_telegram
 
+          socket.setdefaulttimeout(90)
           KST = timezone(timedelta(hours=9))
           now_kst = datetime.now(KST)
-          today_date = now_kst.date()
-          gemini_key = os.environ.get("GEMINI_API_KEY")
 
-          print(f"[{today_date}] 슈퍼개미 이세무사TV 마감시황 공식 RSS 탐색 시작...")
+          print(f"[{now_kst.strftime('%Y-%m-%d %H:%M:%S')}] 슈퍼개미 이세무사TV 마감시황 RSS 탐색 시작...")
 
-          # 1. 유튜브 공식 RSS 피드로 최신 영상 목록 수집 (차단 없이 100% 작동)
           feed_url = "https://www.youtube.com/feeds/videos.xml?channel_id=UCowHl0BGalL433P6bCBgeKA"
           candidates = []
           try:
@@ -61,80 +59,27 @@ jobs:
                   pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00")).astimezone(KST)
                   candidates.append({"video_id": vid, "title": title, "published_at": pub_dt})
           except Exception as e:
-              print(f"RSS 피드 수신 오류: {e}")
-
-          print(f"총 {len(candidates)}개의 최근 영상을 발견했습니다.")
-
-          # 썸네일 [마감시황] 뱃지 판독 함수
-          def check_thumbnail_badge(vid):
-              thumb_url = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
-              try:
-                  req_img = urllib.request.Request(thumb_url, headers={"User-Agent": "Mozilla/5.0"})
-                  with urllib.request.urlopen(req_img, timeout=10) as resp:
-                      img_b64 = base64.b64encode(resp.read()).decode("utf-8")
-
-                  for m_name in ["gemini-3.8-flash", "gemini-3.7-flash"]:
-                      api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={gemini_key}"
-                      payload = json.dumps({
-                          "contents": [{
-                              "parts": [
-                                  {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
-                                  {"text": "이 유튜브 썸네일 이미지의 왼쪽 상단에 빨간색 사각형 배경으로 '마감시황'이라는 글자가 적혀 있습니까? 적혀 있으면 'YES', 없으면 'NO'라고만 답하세요."}
-                              ]
-                          }],
-                          "generationConfig": {"temperature": 0.0, "maxOutputTokens": 10}
-                      }).encode("utf-8")
-
-                      try:
-                          req_api = urllib.request.Request(api_url, data=payload, headers={"Content-Type": "application/json"})
-                          with urllib.request.urlopen(req_api, timeout=15) as a_resp:
-                              data = json.loads(a_resp.read().decode("utf-8"))
-                              txt = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
-                              upper_txt = txt.upper()
-                              if "YES" in upper_txt or "예" in txt or "마감시황" in txt:
-                                  return True
-                              elif "NO" in upper_txt or "아니" in txt:
-                                  return False
-                      except Exception:
-                          pass
-              except Exception as e:
-                  print(f"[{vid}] 썸네일 판독 오류: {e}")
-              return None
+              print(f"RSS 피드 오류: {e}")
 
           target_entry = None
           for item in candidates:
-              vid = item["video_id"]
               title = item["title"]
               pub_dt = item["published_at"]
-              is_today = (pub_dt.date() == today_date)
+              time_diff = (now_kst - pub_dt).total_seconds() / 3600
 
-              print(f"\n[후보 검토] {title} (ID: {vid})")
-              print(f" -> 업로드 일시: {pub_dt.strftime('%Y-%m-%d %H:%M:%S')} (당일 여부: {is_today})")
-
-              # 기획 영상/쇼츠 제외
-              if any(ex in title for ex in ["재테크브라더스", "Shorts", "shorts", "퇴근길"]):
-                  print(" -> 기획 영상/쇼츠 제외")
+              if any(ex in title for ex in ["재테크브라더스", "Shorts", "shorts", "퇴근길", "특강", "인터뷰"]):
                   continue
 
-              if not is_today:
-                  print(" -> 오늘자 영상이 아니므로 건너뜁니다.")
-                  continue
-
-              # 썸네일 [마감시황] 뱃지 판독
-              is_badge = check_thumbnail_badge(vid)
-              print(f" -> 썸네일 '마감시황' 뱃지 판독: {is_badge}")
-
-              has_keywords = any(kw in title for kw in ["코스피", "코스닥", "마감", "장마감", "외국인", "수급", "박스권", "대응", "6,000선"])
-              if is_badge is True or (is_badge is None and has_keywords):
+              is_market_close = any(kw in title for kw in ["코스피", "코스닥", "마감", "장마감", "외국인", "수급", "박스권", "대응", "6000", "6,000", "선 깨졌다", "선 아래로"])
+              if time_diff <= 26 and is_market_close:
                   target_entry = item
-                  print(f"===> 오늘자 마감시황 영상 최종 확정!")
                   break
 
           if not target_entry:
-              print(f"\n[안내] 오늘({today_date})자 이세무사 마감시황 영상을 찾지 못했습니다. 작업을 안전하게 종료합니다.")
+              print("\n[안내] 최근 마감시황 영상을 찾지 못했습니다. 안전 종료합니다.")
               sys.exit(0)
 
-          print(f"\n타깃 영상 확정: {target_entry['title']}")
+          print(f"\n타깃 영상: {target_entry['title']}")
           print(f"YouTube ID: {target_entry['video_id']}")
 
           target_video = Video(
@@ -144,31 +89,31 @@ jobs:
               channel_id="UCowHl0BGalL433P6bCBgeKA",
           )
 
-          # 2. Gemini 영상 분석
-          candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash"]
+          # 3중 모델 백업 및 35초 쿨다운으로 429 에러 방지
+          candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"]
           summary = None
           metadata = None
 
           for model_name in candidate_models:
-              print(f"\nGemini 마감시황 분석 시도: {model_name}...")
+              print(f"\nGemini 영상 분석 시도: {model_name}...")
               os.environ["GEMINI_MODEL"] = model_name
-              for attempt in range(1, 4):
+              for attempt in range(1, 3):
                   try:
                       summary, metadata = analyze_video(target_video)
                       print(f"===> 분석 성공! (적용 모델: {metadata.get('model')})")
                       break
                   except Exception as exc:
-                      print(f"[{model_name} 시도 {attempt}/3 실패]: {exc}")
-                      time.sleep(20)
+                      print(f"[{model_name} 시도 {attempt}/2 오류]: {exc}")
+                      # 429 방지를 위해 35초 대기 후 재시도
+                      time.sleep(35)
               if summary is not None:
                   break
 
           if summary is None:
-              raise RuntimeError("Gemini 영상 분석에 실패했습니다.")
+              raise RuntimeError("Gemini 영상 분석 실패")
 
-          # 3. 렌더링 및 텔레그램 발송
           print("\n1. 텔레그램 메시지 렌더링...")
-          message = render(target_video, summary, today_date)
+          message = render(target_video, summary, target_entry["published_at"].date())
 
           print("2. 텔레그램 발송 시작...")
           try:
@@ -176,5 +121,5 @@ jobs:
           except TypeError:
               deliver_telegram(message, {}, lambda _: None)
 
-          print(f"\n🎉 오늘({today_date})자 이세무사TV 마감시황 텔레그램 발송 완료!")
+          print(f"\n🎉 이세무사TV 마감시황 텔레그램 발송 완료!")
           EOF
