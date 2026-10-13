@@ -31,6 +31,7 @@ jobs:
           import os
           import subprocess
           import sys
+          import time
           from datetime import datetime, timezone, timedelta
           from marketbrief.video.gemini import analyze_video
           from marketbrief.video.pipeline import Video, render, deliver_telegram
@@ -41,9 +42,8 @@ jobs:
           today_yymmdd = now_kst.strftime("%y.%m.%d")
           today_mmdd = now_kst.strftime("%m.%d")
 
-          print(f"[{today_date}] 체슬리TV 오늘자(26.10.12) 모닝브리프 탐색 시작...")
+          print(f"[{today_date}] 체슬리TV 오늘자({today_yymmdd}) 모닝브리프 탐색 시작...")
 
-          # yt-dlp를 사용하여 유튜브 봇 차단 없이 최신 스트림 목록 5개 조회
           cmd = [
               "yt-dlp",
               "--flat-playlist",
@@ -62,7 +62,6 @@ jobs:
                   title = item.get("title", "")
                   vid = item.get("id")
 
-                  # 당일 날짜(26.10.12 또는 10.12) 및 모닝브리프 키워드 확인
                   is_morning = any(kw in title for kw in ["모닝브리프", "운용회의", "모닝"])
                   is_today = (today_yymmdd in title) or (today_mmdd in title)
 
@@ -74,9 +73,8 @@ jobs:
           except Exception as e:
               print(f"yt-dlp 탐색 중 에러: {e}")
 
-          # 오늘자 영상을 찾지 못한 경우: 과거 영상으로 대체하지 않고 안전 종료
           if not target_entry:
-              print(f"\n[안내] 오늘({today_date})자 체슬리TV 모닝브리프 영상이 아직 유튜브에 완전히 게시되지 않았습니다. 작업을 종료합니다.")
+              print(f"\n[안내] 오늘({today_date})자 체슬리TV 모닝브리프 영상을 아직 찾지 못했습니다. 작업을 종료합니다.")
               sys.exit(0)
 
           print(f"\n타깃 영상 확정 (오늘자 모닝브리프): {target_entry['title']}")
@@ -108,9 +106,8 @@ jobs:
                   break
 
           if summary is None:
-              raise RuntimeError("Gemini 영상 분석에 실패했습니다.")
+              raise RuntimeError("Gemini 영상 분석에 최종 실패했습니다.")
 
-          # 렌더링 및 텔레그램 발송
           print("\n1. 텔레그램 메시지 렌더링...")
           message = render(target_video, summary, today_date)
           message = message.replace("이세무사 영상 브리핑", "체슬리TV 모닝브리프")
