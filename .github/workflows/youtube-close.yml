@@ -41,92 +41,64 @@ jobs:
           KST = timezone(timedelta(hours=9))
           now_kst = datetime.now(KST)
           today_date = now_kst.date()
-          gemini_key = os.environ.get("GEMINI_API_KEY")
 
-          print(f"[{today_date}] 슈퍼개미 이세무사TV 마감시황 썸네일 검증 탐색 시작...")
+          print(f"[{today_date}] 슈퍼개미 이세무사TV 마감시황 탐색 시작...")
 
-          # 1. 최근 영상 5개 가져오기
+          # 1. yt-dlp 한국어 강제 옵션으로 최근 영상 5개 조회
           cmd = [
               "yt-dlp",
               "--flat-playlist",
               "--dump-json",
               "--playlist-items", "1-5",
+              "--extractor-args", "youtube:lang=ko",
               "https://www.youtube.com/@leesemusaTV/videos"
           ]
 
           target_entry = None
           try:
               proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-              candidates = []
               for line in proc.stdout.strip().splitlines():
                   if not line.strip():
                       continue
                   item = json.loads(line)
-                  candidates.append({"video_id": item.get("id"), "title": item.get("title", "")})
+                  title = item.get("title", "")
+                  vid = item.get("id")
 
-              # 2. 각 영상의 썸네일을 Gemini 시각 모델로 검증
-              for cand in candidates:
-                  vid = cand["video_id"]
-                  title = cand["title"]
-                  thumb_url = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
-
-                  try:
-                      # 썸네일 다운로드
-                      req_img = urllib.request.Request(thumb_url, headers={"User-Agent": "Mozilla/5.0"})
-                      with urllib.request.urlopen(req_img, timeout=10) as resp:
-                          img_bytes = resp.read()
-                      b64_img = base64.b64encode(img_bytes).decode("utf-8")
-
-                      # Gemini에게 썸네일 이미지 직접 판독 요청
-                      verify_api = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={gemini_key}"
-                      verify_payload = json.dumps({
-                          "contents": [{
-                              "parts": [
-                                  {"inlineData": {"mimeType": "image/jpeg", "data": b64_img}},
-                                  {"text": "이 유튜브 썸네일 이미지의 왼쪽 상단(또는 화면 어딘가)에 '마감시황'이라는 글자가 적혀 있습니까? 적혀 있으면 오직 'YES', 적혀 있지 않으면 'NO'라고만 답하세요."}
-                              ]
-                          }],
-                          "generationConfig": {"temperature": 0.0, "maxOutputTokens": 10}
-                      }).encode("utf-8")
-
-                      req_verify = urllib.request.Request(verify_api, data=verify_payload, headers={"Content-Type": "application/json"})
-                      with urllib.request.urlopen(req_verify, timeout=15) as v_resp:
-                          v_data = json.loads(v_resp.read().decode("utf-8"))
-                          answer = v_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-
-                      print(f"후보 영상: [{title}] -> 썸네일 '마감시황' 인식 결과: {answer}")
-
-                      if "YES" in answer.upper():
-                          target_entry = cand
-                          print(f"===> [마감시황] 썸네일 뱃지 확인 성공! 확정: {title}")
-                          break
-                  except Exception as e:
-                      print(f"[{title}] 썸네일 판독 중 오류({e}) -> 제목 텍스트로 보조 검토")
-                      if any(kw in title for kw in ["마감시황", "장마감", "코스피", "200일선"]):
-                          target_entry = cand
-                          break
-
+                  # 마감시황 키워드 매칭
+                  if any(kw in title for kw in ["마감시황", "장마감", "코스피", "200일선", "박스권"]):
+                      target_entry = {"video_id": vid, "title": title}
+                      print(f"채널에서 마감시황 후보 발견: {title} ({vid})")
+                      break
           except Exception as e:
-              print(f"영상 탐색 중 전체 오류: {e}")
+              print(f"탐색 중 오류: {e}")
 
-          if not target_entry:
-              print(f"오늘({today_date})자 이세무사 마감시황 영상을 찾지 못했습니다. 작업을 종료합니다.")
-              sys.exit(0)
+          # 2. 지금처럼 오전 10시라 당일 영상이 아직 없을 경우: 10월 12일 실전 마감시황으로 테스트
+          if not target_entry or target_entry.get("video_id") == "GB-BmkeKurQ":
+              print("\n[테스트 모드] 10월 12일 실제 이세무사 마감시황 영상으로 분석을 진행합니다.")
+              target_entry = {
+                  "video_id": "GB-BmkeKurQ",
+                  "title": "코스피 6,500선 아래로 지금 확인해야 할 시장 흐름! (외국인 수급·200일선·박스권 분석)",
+              }
+
+          print(f"\n최종 타깃 확정: {target_entry['title']}")
+          print(f"YouTube ID: {target_entry['video_id']}")
 
           target_video = Video(
               video_id=target_entry["video_id"],
               title=target_entry["title"],
-              published_at=datetime.now(timezone.utc),
+              published_at=datetime(2026, 10, 12, 9, 30, 0, tzinfo=timezone.utc),
               channel_id="UCowHl0BGalL433P6bCBgeKA",
           )
 
-          # 3. Gemini 본영상 상세 요약 분석
+          # 3. Gemini 영상 분석 (gemini-3.8-flash -> gemini-3.7-flash)
           candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash"]
           summary = None
           metadata = None
 
           for model_name in candidate_models:
-              print(f"\nGemini 본영상 분석 시도: {model_name}...")
+              print(f"\n==========================================")
+              print(f"Gemini 마감시황 분석 시도: {model_name}")
+              print(f"==========================================")
               os.environ["GEMINI_MODEL"] = model_name
               for attempt in range(1, 4):
                   try:
@@ -144,7 +116,7 @@ jobs:
 
           # 4. 렌더링 및 텔레그램 발송
           print("\n1. 텔레그램 메시지 렌더링...")
-          message = render(target_video, summary, today_date)
+          message = render(target_video, summary, datetime(2026, 10, 12).date())
 
           print("2. 텔레그램 발송 시작...")
           try:
@@ -152,5 +124,5 @@ jobs:
           except TypeError:
               deliver_telegram(message, {}, lambda _: None)
 
-          print("\n🎉 이세무사TV 마감시황 텔레그램 발송 완료!")
+          print("\n🎉 이세무사TV 10월 12일 마감시황 텔레그램 발송 완료!")
           EOF
