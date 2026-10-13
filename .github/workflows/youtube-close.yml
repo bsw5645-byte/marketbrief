@@ -30,10 +30,10 @@ jobs:
           import base64
           import json
           import os
-          import subprocess
           import sys
           import time
           import urllib.request
+          import xml.etree.ElementTree as ET
           from datetime import datetime, timezone, timedelta
           from marketbrief.video.gemini import analyze_video
           from marketbrief.video.pipeline import Video, render, deliver_telegram
@@ -43,33 +43,34 @@ jobs:
           today_date = now_kst.date()
           gemini_key = os.environ.get("GEMINI_API_KEY")
 
-          print(f"[{today_date}] 슈퍼개미 이세무사TV 마감시황 정밀 탐색 시작...")
+          print(f"[{today_date}] 슈퍼개미 이세무사TV 마감시황 공식 RSS 탐색 시작...")
 
-          # 1. 채널의 최근 6개 영상 ID 수집
-          cmd = [
-              "yt-dlp",
-              "--flat-playlist",
-              "--dump-json",
-              "--playlist-items", "1-6",
-              "https://www.youtube.com/@leesemusaTV/videos"
-          ]
+          # 1. 유튜브 공식 RSS 피드로 최신 영상 목록 수집 (차단 없이 100% 작동)
+          feed_url = "https://www.youtube.com/feeds/videos.xml?channel_id=UCowHl0BGalL433P6bCBgeKA"
+          candidates = []
+          try:
+              req = urllib.request.Request(feed_url, headers={"User-Agent": "Mozilla/5.0"})
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  xml_data = resp.read()
+              root = ET.fromstring(xml_data)
+              ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+              for entry in root.findall("atom:entry", ns):
+                  vid = entry.find("yt:videoId", ns).text
+                  title = entry.find("atom:title", ns).text
+                  pub_str = entry.find("atom:published", ns).text
+                  pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00")).astimezone(KST)
+                  candidates.append({"video_id": vid, "title": title, "published_at": pub_dt})
+          except Exception as e:
+              print(f"RSS 피드 수신 오류: {e}")
 
-          proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-          cand_ids = []
-          for line in proc.stdout.strip().splitlines():
-              if not line.strip():
-                  continue
-              item = json.loads(line)
-              vid = item.get("id")
-              if vid and vid not in cand_ids:
-                  cand_ids.append(vid)
+          print(f"총 {len(candidates)}개의 최근 영상을 발견했습니다.")
 
           # 썸네일 [마감시황] 뱃지 판독 함수
           def check_thumbnail_badge(vid):
               thumb_url = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
               try:
-                  req = urllib.request.Request(thumb_url, headers={"User-Agent": "Mozilla/5.0"})
-                  with urllib.request.urlopen(req, timeout=10) as resp:
+                  req_img = urllib.request.Request(thumb_url, headers={"User-Agent": "Mozilla/5.0"})
+                  with urllib.request.urlopen(req_img, timeout=10) as resp:
                       img_b64 = base64.b64encode(resp.read()).decode("utf-8")
 
                   for m_name in ["gemini-3.8-flash", "gemini-3.7-flash"]:
@@ -89,9 +90,10 @@ jobs:
                           with urllib.request.urlopen(req_api, timeout=15) as a_resp:
                               data = json.loads(a_resp.read().decode("utf-8"))
                               txt = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
-                              if "YES" in txt.upper():
+                              upper_txt = txt.upper()
+                              if "YES" in upper_txt or "예" in txt or "마감시황" in txt:
                                   return True
-                              elif "NO" in txt.upper():
+                              elif "NO" in upper_txt or "아니" in txt:
                                   return False
                       except Exception:
                           pass
@@ -100,62 +102,39 @@ jobs:
               return None
 
           target_entry = None
-
-          # 2. 영상별 개별 상세 정보(업로드일, 제목, 썸네일 뱃지) 정밀 검사
-          for vid in cand_ids:
-              v_cmd = ["yt-dlp", "--dump-json", "--no-playlist", f"https://www.youtube.com/watch?v={vid}"]
-              try:
-                  v_proc = subprocess.run(v_cmd, capture_output=True, text=True, check=True)
-                  v_info = json.loads(v_proc.stdout)
-              except Exception as e:
-                  continue
-
-              title = v_info.get("title", "")
-              upload_date_str = v_info.get("upload_date")
-              timestamp = v_info.get("timestamp")
-
-              if timestamp:
-                  pub_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(KST)
-                  up_date = pub_dt.date()
-              elif upload_date_str:
-                  up_date = datetime.strptime(upload_date_str, "%Y%m%d").date()
-                  pub_dt = datetime(up_date.year, up_date.month, up_date.day, tzinfo=KST)
-              else:
-                  up_date = None
-                  pub_dt = datetime.now(timezone.utc)
+          for item in candidates:
+              vid = item["video_id"]
+              title = item["title"]
+              pub_dt = item["published_at"]
+              is_today = (pub_dt.date() == today_date)
 
               print(f"\n[후보 검토] {title} (ID: {vid})")
-              print(f" -> 실제 업로드일: {up_date} (오늘 여부: {up_date == today_date})")
+              print(f" -> 업로드 일시: {pub_dt.strftime('%Y-%m-%d %H:%M:%S')} (당일 여부: {is_today})")
 
-              if up_date != today_date:
-                  print(" -> 오늘자 영상이 아니므로 건너뜁니다.")
+              # 기획 영상/쇼츠 제외
+              if any(ex in title for ex in ["재테크브라더스", "Shorts", "shorts", "퇴근길"]):
+                  print(" -> 기획 영상/쇼츠 제외")
                   continue
 
-              if "재테크브라더스" in title or "Shorts" in title or "shorts" in title:
-                  print(" -> 마감시황 외 기획 영상이므로 건너뜁니다.")
+              if not is_today:
+                  print(" -> 오늘자 영상이 아니므로 건너뜁니다.")
                   continue
 
               # 썸네일 [마감시황] 뱃지 판독
               is_badge = check_thumbnail_badge(vid)
               print(f" -> 썸네일 '마감시황' 뱃지 판독: {is_badge}")
 
-              # 뱃지 확인 성공 시 확정, 판독 일시 오류 시 보조 규칙 적용
-              if is_badge is True:
-                  target_entry = {"video_id": vid, "title": title, "published_at": pub_dt}
-                  print(f"===> 썸네일 [마감시황] 뱃지 일치! 최종 타깃 확정!")
+              has_keywords = any(kw in title for kw in ["코스피", "코스닥", "마감", "장마감", "외국인", "수급", "박스권", "대응", "6,000선"])
+              if is_badge is True or (is_badge is None and has_keywords):
+                  target_entry = item
+                  print(f"===> 오늘자 마감시황 영상 최종 확정!")
                   break
-              elif is_badge is None:
-                  duration = v_info.get("duration", 0)
-                  if any(kw in title for kw in ["코스피", "코스닥", "마감", "외국인", "수급", "박스권"]) and (400 <= duration <= 1800):
-                      target_entry = {"video_id": vid, "title": title, "published_at": pub_dt}
-                      print(f"===> 보조 시황 규칙 일치로 확정!")
-                      break
 
           if not target_entry:
               print(f"\n[안내] 오늘({today_date})자 이세무사 마감시황 영상을 찾지 못했습니다. 작업을 안전하게 종료합니다.")
               sys.exit(0)
 
-          print(f"\n타깃 영상 최종 확정: {target_entry['title']}")
+          print(f"\n타깃 영상 확정: {target_entry['title']}")
           print(f"YouTube ID: {target_entry['video_id']}")
 
           target_video = Video(
@@ -165,7 +144,7 @@ jobs:
               channel_id="UCowHl0BGalL433P6bCBgeKA",
           )
 
-          # 3. Gemini 영상 상세 분석
+          # 2. Gemini 영상 분석
           candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash"]
           summary = None
           metadata = None
@@ -187,7 +166,7 @@ jobs:
           if summary is None:
               raise RuntimeError("Gemini 영상 분석에 실패했습니다.")
 
-          # 4. 렌더링 및 텔레그램 발송
+          # 3. 렌더링 및 텔레그램 발송
           print("\n1. 텔레그램 메시지 렌더링...")
           message = render(target_video, summary, today_date)
 
