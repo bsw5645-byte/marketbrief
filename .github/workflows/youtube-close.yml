@@ -67,7 +67,7 @@ jobs:
           except Exception as e:
               print(f"RSS 피드 오류: {e}")
 
-          # 쇼츠(Shorts) 여부 판별 함수 (리다이렉트 없으면 쇼츠)
+          # 쇼츠(Shorts) 여부 판별 함수
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, req, fp, code, msg, headers, newurl):
                   return None
@@ -79,12 +79,10 @@ jobs:
               try:
                   with opener.open(req, timeout=10) as resp:
                       return resp.status == 200
-              except urllib.error.HTTPError as e:
-                  return False
               except Exception:
                   return False
 
-          # 썸네일 좌측 상단 빨간색 [마감시황] 뱃지 감지 함수 (API 호출 없이 즉시 판별)
+          # 썸네일 좌측 상단 빨간색 [마감시황] 뱃지 감지 함수
           def has_red_close_badge(vid):
               thumb_url = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
               try:
@@ -92,14 +90,12 @@ jobs:
                   with urllib.request.urlopen(req, timeout=10) as resp:
                       img_data = resp.read()
                   img = Image.open(io.BytesIO(img_data)).convert("RGB")
-                  # hqdefault(480x360) 기준 좌측 상단 16:9 영역(x:12~90, y:45~125) 크롭
                   crop = img.crop((12, 45, 90, 125))
                   pixels = list(crop.getdata())
                   red_pixels = sum(1 for r, g, b in pixels if r > 140 and g < 60 and b < 60 and (r - g) > 90)
                   ratio = red_pixels / len(pixels)
                   return ratio >= 0.22, ratio
               except Exception as e:
-                  print(f"썸네일 픽셀 검사 오류: {e}")
                   return False, 0.0
 
           target_entry = None
@@ -109,25 +105,21 @@ jobs:
               pub_dt = item["published_at"]
               hours_ago = (now_kst - pub_dt).total_seconds() / 3600
 
-              # 최근 36시간 이내 영상만 검사
               if hours_ago > 36:
                   continue
 
               print(f"\n[후보 검사] {title} (ID: {vid}, {hours_ago:.1f}시간 전)")
 
-              # 기획/라이브/쇼츠 제목 제외
               if any(ex in title for ex in ["재테크브라더스", "Shorts", "shorts", "퇴근길", "특강", "인터뷰", "LIVE", "라이브", "몽당연필", "홈런왕"]):
                   print(" -> 제외 키워드 포함으로 패스")
                   continue
 
-              # 쇼츠 URL 검사로 쇼츠 완벽 차단
               if is_shorts_video(vid):
                   print(" -> 유튜브 쇼츠(Shorts) 영상이므로 패스")
                   continue
 
-              # 썸네일 좌측 상단 빨간색 [마감시황] 뱃지 확인
               badge_ok, red_ratio = has_red_close_badge(vid)
-              print(f" -> 썸네일 좌측상단 [마감시황] 빨간 뱃지 비율: {red_ratio*100:.1f}% (기준 통과: {badge_ok})")
+              print(f" -> 썸네일 좌측상단 [마감시황] 빨간 뱃지 비율: {red_ratio*100:.1f}% (통과: {badge_ok})")
 
               if badge_ok:
                   target_entry = item
@@ -148,7 +140,7 @@ jobs:
               channel_id="UCowHl0BGalL433P6bCBgeKA",
           )
 
-          # 2. Gemini 영상 분석 (API 쿼터 온전히 보존 상태로 1회 집중 호출)
+          # 2. Gemini 영상 분석
           candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"]
           summary = None
           metadata = None
