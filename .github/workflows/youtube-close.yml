@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements-closing.txt -r requirements-youtube.txt
-          pip install Pillow
+          pip install yt-dlp Pillow
           pip install -e .
       - name: Analyze Lee Semusa Close Brief & Send Telegram
         env:
@@ -33,10 +33,11 @@ jobs:
         run: |
           python - << 'EOF'
           import io
+          import json
           import os
+          import subprocess
           import sys
           import time
-          import urllib.error
           import urllib.request
           import xml.etree.ElementTree as ET
           from datetime import datetime, timezone, timedelta
@@ -46,41 +47,70 @@ jobs:
 
           KST = timezone(timedelta(hours=9))
           now_kst = datetime.now(KST)
+          today_date = now_kst.date()
 
-          print(f"[{now_kst.strftime('%Y-%m-%d %H:%M:%S')}] 슈퍼개미 이세무사TV 마감시황 탐색 시작...")
+          print(f"[{now_kst.strftime('%Y-%m-%d %H:%M:%S')}] 슈퍼개미 이세무사TV 마감시황 3중 탐색 시작...")
 
-          # 1. 유튜브 공식 RSS 피드 조회
-          feed_url = "https://www.youtube.com/feeds/videos.xml?channel_id=UCowHl0BGalL433P6bCBgeKA"
           candidates = []
-          try:
-              req = urllib.request.Request(feed_url, headers={"User-Agent": "Mozilla/5.0"})
-              with urllib.request.urlopen(req, timeout=15) as resp:
-                  xml_data = resp.read()
-              root = ET.fromstring(xml_data)
-              ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
-              for entry in root.findall("atom:entry", ns):
-                  vid = entry.find("yt:videoId", ns).text
-                  title = entry.find("atom:title", ns).text
-                  pub_str = entry.find("atom:published", ns).text
-                  pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00")).astimezone(KST)
-                  candidates.append({"video_id": vid, "title": title, "published_at": pub_dt})
-          except Exception as e:
-              print(f"RSS 피드 오류: {e}")
+          seen_ids = set()
 
-          # 쇼츠(Shorts) 여부 판별 함수
-          class NoRedirect(urllib.request.HTTPRedirectHandler):
-              def redirect_request(self, req, fp, code, msg, headers, newurl):
-                  return None
+          def add_candidate(vid, title):
+              if vid and vid not in seen_ids:
+                  seen_ids.add(vid)
+                  candidates.append({"video_id": vid, "title": title or ""})
 
-          def is_shorts_video(vid):
-              url = f"https://www.youtube.com/shorts/{vid}"
-              opener = urllib.request.build_opener(NoRedirect)
-              req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
+          # [1차 탐색] yt-dlp로 채널 동영상 탭 직접 조회
+          print("1. yt-dlp 채널 탭 조회 중...")
+          for url in [
+              "https://www.youtube.com/channel/UCowHl0BGalL433P6bCBgeKA/videos",
+              "https://www.youtube.com/@leesemusaTV/videos",
+          ]:
               try:
-                  with opener.open(req, timeout=10) as resp:
-                      return resp.status == 200
-              except Exception:
-                  return False
+                  cmd = ["yt-dlp", "--flat-playlist", "--dump-json", "--playlist-items", "1-8", "--extractor-args", "youtube:lang=ko", url]
+                  proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                  for line in proc.stdout.strip().splitlines():
+                      if line.strip():
+                          data = json.loads(line)
+                          add_candidate(data.get("id"), data.get("title"))
+                  if candidates:
+                      break
+              except Exception as e:
+                  print(f" -> 채널 탭 조회 참고: {e}")
+
+          # [2차 탐색] 유튜브 RSS 피드 조회 (1차 실패 시 백업)
+          if not candidates:
+              print("2. RSS 피드 백업 조회 중...")
+              for feed_url in [
+                  "https://www.youtube.com/feeds/videos.xml?channel_id=UCowHl0BGalL433P6bCBgeKA",
+                  "https://www.youtube.com/feeds/videos.xml?playlist_id=UUowHl0BGalL433P6bCBgeKA",
+              ]:
+                  try:
+                      req = urllib.request.Request(feed_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                      with urllib.request.urlopen(req, timeout=15) as resp:
+                          root = ET.fromstring(resp.read())
+                      ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+                      for entry in root.findall("atom:entry", ns):
+                          add_candidate(entry.find("yt:videoId", ns).text, entry.find("atom:title", ns).text)
+                      if candidates:
+                          break
+                  except Exception as e:
+                      print(f" -> RSS 백업 참고: {e}")
+
+          # [3차 탐색] yt-dlp 키워드 검색 (404 완벽 우회)
+          if not candidates:
+              print("3. yt-dlp 검색 엔진 백업 조회 중...")
+              try:
+                  cmd = ["yt-dlp", "--flat-playlist", "--dump-json", "ytsearch10:슈퍼개미 이세무사TV 코스피"]
+                  proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                  for line in proc.stdout.strip().splitlines():
+                      if line.strip():
+                          data = json.loads(line)
+                          if data.get("channel_id") == "UCowHl0BGalL433P6bCBgeKA" or "이세무사" in (data.get("channel") or ""):
+                              add_candidate(data.get("id"), data.get("title"))
+              except Exception as e:
+                  print(f" -> 검색 백업 참고: {e}")
+
+          print(f"총 {len(candidates)}개의 후보 영상을 확보했습니다.")
 
           # 썸네일 좌측 상단 빨간색 [마감시황] 뱃지 감지 함수
           def has_red_close_badge(vid):
@@ -90,47 +120,39 @@ jobs:
                   with urllib.request.urlopen(req, timeout=10) as resp:
                       img_data = resp.read()
                   img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                  # 좌측 상단 [마감시황] 빨간 뱃지 영역(x:12~90, y:45~125) 검사
                   crop = img.crop((12, 45, 90, 125))
                   pixels = list(crop.getdata())
-                  red_pixels = sum(1 for r, g, b in pixels if r > 140 and g < 60 and b < 60 and (r - g) > 90)
+                  red_pixels = sum(1 for r, g, b in pixels if r > 140 and g < 65 and b < 65 and (r - g) > 85)
                   ratio = red_pixels / len(pixels)
-                  return ratio >= 0.22, ratio
-              except Exception as e:
+                  return ratio >= 0.20, ratio
+              except Exception:
                   return False, 0.0
 
           target_entry = None
           for item in candidates:
               vid = item["video_id"]
               title = item["title"]
-              pub_dt = item["published_at"]
-              hours_ago = (now_kst - pub_dt).total_seconds() / 3600
 
-              if hours_ago > 36:
+              # 기획/라이브/쇼츠 제목 1차 제외
+              if any(ex in title for ex in ["재테크브라더스", "Shorts", "shorts", "퇴근길", "특강", "인터뷰", "LIVE", "라이브", "몽당연필", "홈런왕", "찰리 멍거", "워런 버핏"]):
+                  print(f"[제외] {title} (기획/쇼츠 영상)")
                   continue
 
-              print(f"\n[후보 검사] {title} (ID: {vid}, {hours_ago:.1f}시간 전)")
-
-              if any(ex in title for ex in ["재테크브라더스", "Shorts", "shorts", "퇴근길", "특강", "인터뷰", "LIVE", "라이브", "몽당연필", "홈런왕"]):
-                  print(" -> 제외 키워드 포함으로 패스")
-                  continue
-
-              if is_shorts_video(vid):
-                  print(" -> 유튜브 쇼츠(Shorts) 영상이므로 패스")
-                  continue
-
+              # 썸네일 좌측 상단 빨간색 [마감시황] 뱃지 검사 (쇼츠는 좌측이 검은 여백이라 자동 탈락)
               badge_ok, red_ratio = has_red_close_badge(vid)
-              print(f" -> 썸네일 좌측상단 [마감시황] 빨간 뱃지 비율: {red_ratio*100:.1f}% (통과: {badge_ok})")
+              print(f"[후보] {title} (ID: {vid}) -> 빨간 뱃지 비율: {red_ratio*100:.1f}% (통과: {badge_ok})")
 
               if badge_ok:
-                  target_entry = item
-                  print("===> [마감시황] 썸네일 뱃지 확인 완료! 최종 타깃 확정!")
+                  target_entry = {"video_id": vid, "title": title, "published_at": now_kst}
+                  print(f"===> [마감시황] 썸네일 뱃지 확인 완료! 타깃 확정!")
                   break
 
           if not target_entry:
-              print("\n[안내] 최근 마감시황 영상을 찾지 못했습니다. 안전 종료합니다.")
+              print("\n[안내] 조건에 맞는 마감시황 영상을 찾지 못했습니다. 안전 종료합니다.")
               sys.exit(0)
 
-          print(f"\n타깃 영상: {target_entry['title']}")
+          print(f"\n최종 선정 영상: {target_entry['title']}")
           print(f"YouTube ID: {target_entry['video_id']}")
 
           target_video = Video(
@@ -140,7 +162,7 @@ jobs:
               channel_id="UCowHl0BGalL433P6bCBgeKA",
           )
 
-          # 2. Gemini 영상 분석
+          # Gemini 영상 분석
           candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"]
           summary = None
           metadata = None
@@ -162,9 +184,9 @@ jobs:
           if summary is None:
               raise RuntimeError("Gemini 영상 분석 최종 실패")
 
-          # 3. 렌더링 및 텔레그램 발송
+          # 렌더링 및 텔레그램 발송
           print("\n1. 텔레그램 메시지 렌더링...")
-          message = render(target_video, summary, target_entry["published_at"].date())
+          message = render(target_video, summary, today_date)
 
           print("2. 텔레그램 발송 시작...")
           try:
