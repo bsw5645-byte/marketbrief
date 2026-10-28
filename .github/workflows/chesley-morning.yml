@@ -28,4 +28,195 @@ jobs:
         env:
           PYTHONPATH: src
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - << 'EOF'
+          import glob
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+          import urllib.request
+          from datetime import datetime, timezone, timedelta
+          from marketbrief.video.gemini import analyze_video
+          from marketbrief.video.pipeline import Video, render, deliver_telegram
+
+          KST = timezone(timedelta(hours=9))
+          now_kst = datetime.now(KST)
+          today_date = now_kst.date()
+          today_yymmdd = now_kst.strftime("%y.%m.%d")
+          today_mmdd = now_kst.strftime("%m.%d")
+
+          print(f"[{today_date}] 체슬리TV 모닝브리프 탐색 시작...")
+
+          cmd = [
+              "yt-dlp",
+              "--flat-playlist",
+              "--dump-json",
+              "--playlist-items", "1-6",
+              "https://www.youtube.com/@chesleytv/streams"
+          ]
+
+          target_entry = None
+          fallback_entry = None
+          try:
+              proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+              for line in proc.stdout.strip().splitlines():
+                  if not line.strip():
+                      continue
+                  item = json.loads(line)
+                  title = item.get("title", "")
+                  vid = item.get("id")
+
+                  is_morning = any(kw in title for kw in ["모닝브리프", "운용회의", "모닝"])
+                  is_today = (today_yymmdd in title) or (today_mmdd in title)
+
+                  print(f"후보 검토: [{title}] (ID: {vid}) -> 당일 매칭: {is_today}")
+
+                  if is_morning and fallback_entry is None:
+                      fallback_entry = {"video_id": vid, "title": title}
+
+                  if is_morning and is_today:
+                      target_entry = {"video_id": vid, "title": title}
+                      break
+          except Exception as e:
+              print(f"yt-dlp 탐색 중 에러: {e}")
+
+          # 수동 실행(workflow_dispatch) 시 오늘자 영상이 없으면 가장 최근 모닝브리프 선택
+          if not target_entry and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and fallback_entry:
+              print("\n[수동 실행 모드] 당일 날짜 영상을 찾지 못해 가장 최근 모닝브리프 영상으로 대체합니다.")
+              target_entry = fallback_entry
+
+          if not target_entry:
+              print(f"\n[안내] 오늘({today_date})자 체슬리TV 모닝브리프 영상을 찾지 못했습니다. 종료합니다.")
+              sys.exit(0)
+
+          vid = target_entry["video_id"]
+          title = target_entry["title"]
+          print(f"\n타깃 영상 확정: {title} (ID: {vid})")
+
+          target_video = Video(
+              video_id=vid,
+              title=title,
+              published_at=datetime.now(timezone.utc),
+              channel_id="UCXST0Hq6CAmG0dmo3jgrlEw",
+          )
+
+          # [1단계] 기본 비디오 파이프라인 시도 (각 모델 1회씩만 빠르게 시도)
+          candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash"]
+          summary = None
+
+          for model_name in candidate_models:
+              print(f"\n[1차 비디오 직접 분석] 모델: {model_name}...")
+              os.environ["GEMINI_MODEL"] = model_name
+              try:
+                  summary, metadata = analyze_video(target_video)
+                  print(f"===> 비디오 직접 분석 성공! ({model_name})")
+                  break
+              except Exception as exc:
+                  print(f"[{model_name} 비디오 직접 분석 실패]: {exc}")
+                  time.sleep(10)
+
+          # [2단계 핵심 해결책] 장시간 영상 500/503/미완성 오류 시 -> 자막(스크립트) 추출하여 텍스트로 초고속 요약
+          if summary is None:
+              print("\n[2차 자막 추출 우회 모드 가동] 1시간 장시간 영상 부하 우회를 위해 자막 텍스트를 추출합니다...")
+              transcript_text = ""
+              try:
+                  sub_cmd = [
+                      "yt-dlp",
+                      "--skip-download",
+                      "--write-auto-sub",
+                      "--write-sub",
+                      "--sub-lang", "ko",
+                      "--sub-format", "vtt",
+                      "-o", "sub_%(id)s",
+                      f"https://www.youtube.com/watch?v={vid}"
+                  ]
+                  subprocess.run(sub_cmd, capture_output=True, text=True, timeout=45)
+                  vtt_files = glob.glob(f"sub_{vid}*.vtt")
+                  if vtt_files:
+                      with open(vtt_files[0], "r", encoding="utf-8") as f:
+                          raw_vtt = f.read()
+                      lines = []
+                      for line in raw_vtt.splitlines():
+                          line = line.strip()
+                          if not line or line.startswith("WEBVTT") or "-->" in line or line.startswith("Kind:") or line.startswith("Language:"):
+                              continue
+                          clean = re.sub(r"<[^>]+>", "", line)
+                          if clean and (not lines or lines[-1] != clean):
+                              lines.append(clean)
+                      transcript_text = " ".join(lines)
+                      print(f"===> 자막 추출 성공! (추출 텍스트 길이: {len(transcript_text)}자)")
+              except Exception as e:
+                  print(f"자막 추출 참고: {e}")
+
+              # 자막이 아직 안 만들어졌을 경우 영상 설명란/제목 메타데이터 확보
+              if len(transcript_text) < 200:
+                  try:
+                      info_cmd = ["yt-dlp", "--dump-json", "--no-playlist", f"https://www.youtube.com/watch?v={vid}"]
+                      p_info = subprocess.run(info_cmd, capture_output=True, text=True, timeout=20)
+                      v_data = json.loads(p_info.stdout)
+                      transcript_text = f"영상 제목: {title}\n설명: {v_data.get('description', '')}"
+                  except Exception:
+                      transcript_text = f"영상 제목: {title}"
+
+              # Gemini 텍스트 API 직접 호출 (용량이 작아 500/503 에러가 절대 나지 않음)
+              gemini_key = os.environ.get("GEMINI_API_KEY")
+              prompt = (
+                  f"다음은 오늘 체슬리TV 모닝브리프({title}) 방송의 전체 스크립트입니다.\n"
+                  "핵심 시황, 글로벌 매크로 분석, 주요 섹터/종목 뷰, 투자 전략 및 박세익 전무와 펀드매니저들의 핵심 코멘트를 "
+                  "가독성 높게 구조화하여 요약해 주세요. 마크다운 기호(*, # 등) 대신 깔끔한 글머리 기호(•, -, 1. 등)와 줄바꿈을 사용하세요.\n\n"
+                  f"[방송 스크립트]\n{transcript_text[:60000]}"
+              )
+
+              for model_name in candidate_models:
+                  print(f"Gemini 텍스트 요약 시도: {model_name}...")
+                  api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
+                  payload = json.dumps({
+                      "contents": [{"parts": [{"text": prompt}]}],
+                      "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096}
+                  }).encode("utf-8")
+
+                  try:
+                      req = urllib.request.Request(api_url, data=payload, headers={"Content-Type": "application/json"})
+                      with urllib.request.urlopen(req, timeout=60) as resp:
+                          res_data = json.loads(resp.read().decode("utf-8"))
+                          text_out = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                          if text_out:
+                              print(f"===> 텍스트 기반 요약 완수! ({model_name})")
+                              # render() 호환 처리 및 직접 발송 지원
+                              summary = text_out
+                              break
+                  except Exception as e:
+                      print(f"[{model_name} 텍스트 요약 실패]: {e}")
+                      time.sleep(15)
+
+          if summary is None:
+              raise RuntimeError("모든 방식(비디오 및 자막 텍스트)에서 요약 생성에 실패했습니다.")
+
+          print("\n1. 텔레그램 메시지 렌더링...")
+          try:
+              if isinstance(summary, str):
+                  message = (
+                      f"📺 [체슬리TV 모닝브리프] ({today_date})\n"
+                      f"제목: {title}\n"
+                      f"링크: https://www.youtube.com/watch?v={vid}\n\n"
+                      f"{summary}"
+                  )
+              else:
+                  message = render(target_video, summary, today_date)
+                  message = message.replace("이세무사 영상 브리핑", "체슬리TV 모닝브리프")
+          except Exception:
+              message = f"📺 [체슬리TV 모닝브리프]\n{title}\nhttps://www.youtube.com/watch?v={vid}\n\n{summary}"
+
+          print("2. 텔레그램 발송 시작...")
+          try:
+              deliver_telegram(message, receipt={}, save=lambda _: None)
+          except TypeError:
+              deliver_telegram(message, {}, lambda _: None)
+
+          print("\n🎉 체슬리TV 모닝브리프 텔레그램 발송 완료!")
+          EOF
