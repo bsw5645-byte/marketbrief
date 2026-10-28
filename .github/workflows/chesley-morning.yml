@@ -87,8 +87,8 @@ jobs:
               channel_id="UCXST0Hq6CAmG0dmo3jgrlEw",
           )
 
-          # gemini-2.5-flash까지 3중 예비 모델 구성 및 재시도 간격 35초 적용
-          candidate_models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"]
+          # 공식 검증 모델 적용 (gemini-2.0-flash / gemini-1.5-flash)
+          candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
           summary = None
           metadata = None
 
@@ -102,7 +102,7 @@ jobs:
                       break
                   except Exception as exc:
                       print(f"[{model_name} 시도 {attempt}/2 실패]: {exc}")
-                      time.sleep(35)
+                      time.sleep(45)
               if summary is not None:
                   break
 
