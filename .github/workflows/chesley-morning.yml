@@ -6,9 +6,14 @@ on:
     - cron: '0 2 * * 1-5'
   workflow_dispatch:
 
+concurrency:
+  group: chesley-morning
+  cancel-in-progress: true
+
 jobs:
   chesley-morning:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,101 +28,4 @@ jobs:
         env:
           PYTHONPATH: src
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python - << 'EOF'
-          import json
-          import os
-          import subprocess
-          import sys
-          import time
-          from datetime import datetime, timezone, timedelta
-          from marketbrief.video.gemini import analyze_video
-          from marketbrief.video.pipeline import Video, render, deliver_telegram
-
-          KST = timezone(timedelta(hours=9))
-          now_kst = datetime.now(KST)
-          today_date = now_kst.date()
-          today_yymmdd = now_kst.strftime("%y.%m.%d")
-          today_mmdd = now_kst.strftime("%m.%d")
-
-          print(f"[{today_date}] 체슬리TV 오늘자({today_yymmdd}) 모닝브리프 탐색 시작...")
-
-          cmd = [
-              "yt-dlp",
-              "--flat-playlist",
-              "--dump-json",
-              "--playlist-items", "1-5",
-              "https://www.youtube.com/@chesleytv/streams"
-          ]
-
-          target_entry = None
-          try:
-              proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-              for line in proc.stdout.strip().splitlines():
-                  if not line.strip():
-                      continue
-                  item = json.loads(line)
-                  title = item.get("title", "")
-                  vid = item.get("id")
-
-                  is_morning = any(kw in title for kw in ["모닝브리프", "운용회의", "모닝"])
-                  is_today = (today_yymmdd in title) or (today_mmdd in title)
-
-                  print(f"후보 영상 검토: [{title}] (ID: {vid}) -> 당일 매칭: {is_today}")
-
-                  if is_morning and is_today:
-                      target_entry = {"video_id": vid, "title": title}
-                      break
-          except Exception as e:
-              print(f"yt-dlp 탐색 중 에러: {e}")
-
-          if not target_entry:
-              print(f"\n[안내] 오늘({today_date})자 체슬리TV 모닝브리프 영상을 아직 찾지 못했습니다. 작업을 종료합니다.")
-              sys.exit(0)
-
-          print(f"\n타깃 영상 확정 (오늘자 모닝브리프): {target_entry['title']}")
-          print(f"YouTube ID: {target_entry['video_id']}")
-
-          target_video = Video(
-              video_id=target_entry["video_id"],
-              title=target_entry["title"],
-              published_at=datetime.now(timezone.utc),
-              channel_id="UCXST0Hq6CAmG0dmo3jgrlEw",
-          )
-
-          # 공식 검증 모델 적용 (gemini-2.0-flash / gemini-1.5-flash)
-          candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
-          summary = None
-          metadata = None
-
-          for model_name in candidate_models:
-              print(f"\nGemini 영상 분석 시도: {model_name}...")
-              os.environ["GEMINI_MODEL"] = model_name
-              for attempt in range(1, 3):
-                  try:
-                      summary, metadata = analyze_video(target_video)
-                      print(f"===> 분석 성공! (적용 모델: {metadata.get('model')})")
-                      break
-                  except Exception as exc:
-                      print(f"[{model_name} 시도 {attempt}/2 실패]: {exc}")
-                      time.sleep(45)
-              if summary is not None:
-                  break
-
-          if summary is None:
-              raise RuntimeError("Gemini 영상 분석에 최종 실패했습니다.")
-
-          print("\n1. 텔레그램 메시지 렌더링...")
-          message = render(target_video, summary, today_date)
-          message = message.replace("이세무사 영상 브리핑", "체슬리TV 모닝브리프")
-
-          print("2. 텔레그램 발송 시작...")
-          try:
-              deliver_telegram(message, receipt={}, save=lambda _: None)
-          except TypeError:
-              deliver_telegram(message, {}, lambda _: None)
-
-          print("\n🎉 오늘자 체슬리TV 모닝브리프 텔레그램 발송 완료!")
-          EOF
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN
